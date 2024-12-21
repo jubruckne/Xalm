@@ -8,7 +8,7 @@
 
 #include "fmt/format.h"
 
-#include "codec.h"
+#include "tensor.h"
 #include "model.h"
 #include "sampler.h"
 #include "time.h"
@@ -72,8 +72,8 @@ void run_completion(
   }
   if (device == "cuda") {
     std::cout << "Using CUDA" << std::endl;
-    model.cuda();
-    state.cuda();
+    //model.cuda();
+    //state.cuda();
   }
 
   // Do one inference as warmup.
@@ -162,8 +162,8 @@ void run_perplexity(
 
   if (device == "cuda") {
     std::cout << "Using CUDA" << std::endl;
-    model.cuda();
-    state.cuda();
+    //model.cuda();
+    //state.cuda();
   }
 
   // Do one inference as warmup.
@@ -250,8 +250,8 @@ void run_passkey(
 
   if (device == "cuda") {
     std::cout << "Using CUDA" << std::endl;
-    model.cuda();
-    state.cuda();
+    //model.cuda();
+    //state.cuda();
   }
 
   // Do one inference as warmup.
@@ -332,7 +332,7 @@ void run_passkey(
 int main(int argc, char* argv[]) {
   std::string checkpoint_path = "";    // e.g. out/model.bin
   // Options
-  std::string device = "cuda";         // cpu or cuda
+  std::string device = "cpu";         // cpu or cuda
   std::string mode = "completion";     // completion, passkey, or perplexity
   std::string prompt = "";             // prompt string
   std::string prompt_path = "";        // prompt file path

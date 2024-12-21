@@ -1,6 +1,6 @@
 #pragma once
 
-#include "codec.h"
+#include "tensor.h"
 
 #include <memory>
 #include <string>

@@ -6,29 +6,13 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include "types.h"
 
 using json = nlohmann::json;
 
-typedef uint16_t f16_t;
-
-// TODO: Should this be narrowed down to what we actually support for model weight representation?
-enum class DType {
-  F32,
-  F16,
-  BF16,
-  F8E5M2,
-  F8E4M3,
-  I32,
-  I16,
-  I8,
-  U8,
-};
-std::string dtype_to_string(DType dtype);
-size_t dtype_size(DType dtype);
-
 struct Tensor {
   std::string name;
-  DType dtype;
+  mutable Type dtype = Type::Unknown;
   std::array<int, 4> shape = {0, 0, 0, 0};
   void* data = nullptr;
   size_t size; // size in bytes (number of elements * element size)

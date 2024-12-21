@@ -1,8 +1,10 @@
+CC = clang
+CXX = clang
+
 MAKEFLAGS+=-r -j
 
 UNAME=$(shell uname)
-
-NVCC?=nvcc
+# NVCC?=nvcc
 
 BUILD=build
 ASM_DIR=$(BUILD)/asm
@@ -11,11 +13,11 @@ ASM_DIR=$(BUILD)/asm
 SOURCES=$(filter-out src/test.cpp,$(wildcard src/*.c))
 SOURCES+=$(filter-out src/test.cpp,$(wildcard src/*.cc))
 SOURCES+=$(filter-out src/test.cpp,$(wildcard src/*.cpp))
-SOURCES+=$(filter-out src/test.cpp,$(wildcard src/*.cu))
+#SOURCES+=$(filter-out src/test.cpp,$(wildcard src/*.cu))
 SOURCES+=$(wildcard vendor/*.c)
 SOURCES+=$(wildcard vendor/*.cc)
 SOURCES+=$(wildcard vendor/*.cpp)
-SOURCES+=$(wildcard vendor/*.cu)
+#SOURCES+=$(wildcard vendor/*.cu)
 
 # Define test sources separately
 TEST_SOURCES=src/test.cpp
@@ -29,25 +31,23 @@ TEST_ASM_FILES=$(patsubst %.cpp,$(ASM_DIR)/%.s,$(filter %.cpp,$(TEST_SOURCES)))
 BINARY=$(BUILD)/main
 TEST_BINARY=$(BUILD)/test
 
-CFLAGS=-g -Wall -Wpointer-arith -Werror -O3 -ffast-math -Ivendor -std=c++20
-LDFLAGS=-lm
+CFLAGS=-g -Wall -Wpointer-arith -Werror -O3 -Ivendor -std=c++23 -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include
+LDFLAGS=-lstdc++ -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
-CFLAGS+=-fopenmp -mf16c -mavx2 -mfma
-LDFLAGS+=-fopenmp
-LDFLAGS+=-lcudart
-
-ifneq (,$(wildcard /usr/local/cuda))
-  LDFLAGS+=-L/usr/local/cuda/lib64
-endif
-
-CUFLAGS+=-O2 -lineinfo -Ivendor
-CUFLAGS+=-allow-unsupported-compiler # for recent CUDA versions
-
-ifeq ($(CUARCH),)
-  CUFLAGS+=-gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 --threads 2
-else
-  CUFLAGS+=-arch=$(CUARCH)
-endif
+#LDFLAGS+=-lcudart
+#
+#ifneq (,$(wildcard /usr/local/cuda))
+#  LDFLAGS+=-L/usr/local/cuda/lib64
+#endif
+#
+#CUFLAGS+=-O2 -lineinfo -Ivendor
+#CUFLAGS+=-allow-unsupported-compiler # for recent CUDA versions
+#
+#ifeq ($(CUARCH),)
+#  CUFLAGS+=-gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 --threads 2
+#else
+#  CUFLAGS+=-arch=$(CUARCH)
+#endif
 
 all: $(BINARY) asm
 
@@ -70,7 +70,7 @@ $(TEST_BINARY): $(TEST_OBJECTS)
 # Rule to generate assembly for cpp files
 $(ASM_DIR)/%.s: %.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $< $(CFLAGS) -S -masm=intel -o $@
+	$(CXX) $< $(CFLAGS) -S -o $@
 
 $(BUILD)/%.c.o: %.c
 	@mkdir -p $(dir $@)

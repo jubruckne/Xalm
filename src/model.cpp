@@ -7,9 +7,10 @@
 #include "fmt/format.h"
 #include <iostream>
 #include <limits.h>
+#include "types.h"
 #include <string>
 
-#include "immintrin.h"
+// #include "immintrin.h"
 
 using json = nlohmann::json;
 
@@ -53,20 +54,11 @@ void Config::from_yalm(YALMData& yalm, int context) {
 
   qkv_clip = yalm.metadata.contains("qkv_clip") ? std::stof(yalm.metadata.at("qkv_clip").get<std::string>()) : FLT_MAX;
 
-  std::string dtype = yalm.metadata.at("dtype").get<std::string>();
-  // TODO: support fp8
-  if (dtype == "fp32") {
-    weight_dtype = DType::F32;
-  } else if (dtype == "fp16") {
-    weight_dtype = DType::F16;
-  } else {
-    std::cerr << "FATAL: unsupported dtype: " << dtype << std::endl;
-    assert(false);
-  }
+  const auto dtype = yalm.metadata.at("dtype").get<std::string>();
 }
 
 size_t Config::active_bytes(size_t pos) const {
-  size_t weight_size = dtype_size(weight_dtype);
+  size_t weight_size = sizeof(float);
 
   size_t bytes_per_block = 0;
   bytes_per_block += 2 * dim * sizeof(float); // rms_att_weight, rms_ffn_weight
@@ -87,26 +79,38 @@ size_t Config::active_bytes(size_t pos) const {
   return bytes;
 }
 
-void* check_tensor(const Tensor* tensor, DType weight_dtype, std::array<int, 4> shape) {
+const Tensor* check_tensor(const Tensor* tensor, std::array<int, 4> shape) {
   if (tensor == nullptr) {
     std::cerr << "FATAL: missing tensor" << std::endl;
     assert(false);
     return nullptr;
   }
-  if (tensor->dtype != weight_dtype || tensor->shape != shape) {
+
+  if (tensor->shape != shape) {
     std::cerr << "FATAL: tensor mismatch for " << tensor->name << std::endl;
     std::cerr 
-      << fmt::format("expected: dtype={}, shape=[{},{},{},{}]", dtype_to_string(weight_dtype), shape[0], shape[1], shape[2], shape[3]) 
+      << fmt::format("expected: shape=[{},{},{},{}]", shape[0], shape[1], shape[2], shape[3])
       << std::endl;
     std::cerr 
-      << fmt::format("got: dtype={}, shape=[{},{},{},{}]", dtype_to_string(tensor->dtype), tensor->shape[0], tensor->shape[1], tensor->shape[2], tensor->shape[3]) 
+      << fmt::format("got: dtype={}, shape=[{},{},{},{}]", tensor->dtype.to_string(), tensor->shape[0], tensor->shape[1], tensor->shape[2], tensor->shape[3])
       << std::endl;
     assert(false);
   }
-  return tensor->data;
-};
+  return tensor;
+}
 
 const Tensor* get_tensor(const YALMData& yalm, const std::string& key) {
+	auto it = yalm.tensors.find(key);
+	if (it == yalm.tensors.end()) {
+		std::cerr << "FATAL: missing tensor: " << key << std::endl;
+		assert(false);
+		return nullptr;
+	}
+	const Tensor& tensor = it->second;
+	return &tensor;
+}
+
+const Tensor* get_tensor(const YALMData& yalm, const std::string& key, std::array<int, 4> shape) {
   auto it = yalm.tensors.find(key);
   if (it == yalm.tensors.end()) {
     std::cerr << "FATAL: missing tensor: " << key << std::endl;
@@ -114,8 +118,21 @@ const Tensor* get_tensor(const YALMData& yalm, const std::string& key) {
     return nullptr;
   }
   const Tensor& tensor = it->second;
+
+  if (tensor.shape != shape) {
+    std::cerr << "FATAL: tensor mismatch for " << tensor.name << std::endl;
+    std::cerr
+      << fmt::format("expected: shape=[{},{},{},{}]", shape[0], shape[1], shape[2], shape[3])
+      << std::endl;
+    std::cerr
+      << fmt::format("got: dtype={}, shape=[{},{},{},{}]", tensor.dtype.to_string(), tensor.shape[0], tensor.shape[1], tensor.shape[2], tensor.shape[3])
+      << std::endl;
+    assert(false);
+    return nullptr;
+  }
+
   return &tensor;
-};
+}
 
 Block::Block(
   int layer_i,
@@ -130,51 +147,21 @@ Block::Block(
   const Tensor* w2,
   const Tensor* w3
 ) {
-#if DEBUG_MODEL
   _layer_i = layer_i;
-#endif
   _config = config;
-  switch (config->weight_dtype) {
-    case DType::F32:
-    case DType::F16: {
-      break;
-    }
-    default: {
-      std::cerr << "FATAL: unsupported weight dtype " << dtype_to_string(config->weight_dtype) << std::endl;
-      assert(false);
-      break;
-    }
-  }
 
-  _rms_att_weight = static_cast<float*>(check_tensor(
-    rms_att_weight, DType::F32, {config->dim, 0, 0, 0}
-  ));
-  _rms_ffn_weight = static_cast<float*>(check_tensor(
-    rms_ffn_weight, DType::F32, {config->dim, 0, 0, 0}
-  ));
+  _rms_att_weight = check_tensor(rms_att_weight, {config->dim, 0, 0, 0});
+  _rms_ffn_weight = check_tensor(rms_ffn_weight, {config->dim, 0, 0, 0});
 
-  _wq = check_tensor(
-    wq, config->weight_dtype, {config->n_heads * config->head_dim, config->dim, 0, 0}
-  );
-  _wk = check_tensor(
-    wk, config->weight_dtype, {config->n_kv_heads * config->head_dim, config->dim, 0, 0}
-  );
-  _wv = check_tensor(
-    wv, config->weight_dtype, {config->n_kv_heads * config->head_dim, config->dim, 0, 0}
-  );
-  _wo = check_tensor(
-    wo, config->weight_dtype, {config->dim, config->n_heads * config->head_dim, 0, 0}
-  );
+  _wq = check_tensor(wq, {config->n_heads * config->head_dim, config->dim, 0, 0});
+  _wk = check_tensor(wk, {config->n_kv_heads * config->head_dim, config->dim, 0, 0});
+  _wv = check_tensor(wv, {config->n_kv_heads * config->head_dim, config->dim, 0, 0});
 
-  _w1 = check_tensor(
-    w1, config->weight_dtype, {config->hidden_dim, config->dim, 0, 0}
-  );
-  _w2 = check_tensor(
-    w2, config->weight_dtype, {config->dim, config->hidden_dim, 0, 0}
-  );
-  _w3 = check_tensor(
-    w3, config->weight_dtype, {config->hidden_dim, config->dim, 0, 0}
-  );
+  _wo = check_tensor(wo, {config->dim, config->n_heads * config->head_dim, 0, 0});
+
+  _w1 = check_tensor(w1, {config->hidden_dim, config->dim, 0, 0});
+  _w2 = check_tensor(w2, {config->dim, config->hidden_dim, 0, 0});
+  _w3 = check_tensor(w3, {config->hidden_dim, config->dim, 0, 0});
 
   _key_cache = new f16_t[config->max_seq_len * config->n_kv_heads * config->head_dim]();
   _value_cache = new f16_t[config->max_seq_len * config->n_kv_heads * config->head_dim]();
@@ -185,11 +172,14 @@ Block::~Block() {
     delete[] _key_cache;
     delete[] _value_cache;
   } else {
-    free_cuda(_key_cache);
-    free_cuda(_value_cache);
+    std::cerr << "FATAL: unsupported device " << std::endl;
+
+    //free_cuda(_key_cache);
+    //free_cuda(_value_cache);
   }
 }
 
+/*
 void Block::cuda() {
   if (_device != Device::CPU) {
     return;
@@ -215,6 +205,7 @@ void Block::cuda() {
   _key_cache = static_cast<f16_t*>(upload_cuda(_key_cache, _config->max_seq_len * _config->n_kv_heads * _config->head_dim * sizeof(f16_t)));
   _value_cache = static_cast<f16_t*>(upload_cuda(_value_cache, _config->max_seq_len * _config->n_kv_heads * _config->head_dim * sizeof(f16_t)));
 }
+*/
 
 void Block::block(
   InferenceState& s,  // inference state
@@ -223,6 +214,7 @@ void Block::block(
   int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
   int kv_len          // number of tokens in the kv cache that we will attend over
 ) const {
+  /*
   if (_device == Device::CUDA) {
     switch (_config->weight_dtype) {
       case DType::F32: {
@@ -237,25 +229,9 @@ void Block::block(
         assert(false && "unsupported weight dtype for cuda");
       }
     }
-  } else {
-    switch (_config->weight_dtype) {
-      case DType::F32: {
-        _block_cpu<float>(s, pos, kv_sink, kv_pos, kv_len);
-        break;
-      }
-      case DType::F16: {
-#if defined(__AVX2__) && defined(__F16C__)
-        _block_cpu<f16_t>(s, pos, kv_sink, kv_pos, kv_len);
-#else
-        assert(false && "float16 not supported on this platform");
-#endif
-        break;
-      }
-      default: {
-        assert(false && "unsupported weight dtype for cpu");
-      }
-    }
-  }
+  } else { */
+      _block_cpu(s, pos, kv_sink, kv_pos, kv_len);
+  // }
 
 }
 
@@ -287,7 +263,7 @@ InferenceState::~InferenceState() {
     delete[] _att;
     delete[] _logits;
   } else {
-    free_cuda(_x);
+    /*free_cuda(_x);
     free_cuda(_xb);
     free_cuda(_xb2);
     free_cuda(_hb);
@@ -297,10 +273,12 @@ InferenceState::~InferenceState() {
     free_cuda(_v);
     free_cuda(_att);
     unregister_cuda_host(_logits);
-    delete[] _logits;
+    delete[] _logits;*/
+    std::cerr << "FATAL: unsupported device " << std::endl;
   }
 }
 
+/*
 void InferenceState::cuda() {
   if (_device != Device::CPU) {
     return;
@@ -317,17 +295,17 @@ void InferenceState::cuda() {
   _att = static_cast<float*>(upload_cuda(_att, _config->n_heads * _config->max_seq_len * sizeof(float)));
   register_cuda_host(_logits, _config->vocab_size * sizeof(float));
 }
+*/
 
 Model::Model(YALMData& yalm, int context) {
   config = std::make_shared<Config>();
   config->from_yalm(yalm, context);
-  std::cout << "loading model with dtype: " << dtype_to_string(config->weight_dtype) << std::endl;
+  printf("loading model...\n");
 
-  token_embedding_table = check_tensor(
-    get_tensor(yalm, "model.embed.weight"), 
-    config->weight_dtype,
-    {config->vocab_size, config->dim, 0, 0}
-  );
+  token_embedding_table = get_tensor(yalm, "model.embed.weight", {config->vocab_size, config->dim, 0, 0});
+
+  //auto ttt = get_tensor(yalm, "model.embed.weight");
+  //auto tty = ttt->convert_to(DType::F8);
 
   for (int i = 0; i < config->n_layers; ++i) {
     blocks.emplace_back(std::make_shared<Block>(
@@ -345,18 +323,11 @@ Model::Model(YALMData& yalm, int context) {
     ));
   }
 
-  rms_final_weight = static_cast<float*>(check_tensor(
-    get_tensor(yalm, "model.norm.weight"), 
-    DType::F32, 
-    {config->dim, 0, 0, 0}
-  ));
-  wcls = check_tensor(
-    get_tensor(yalm, "model.output.weight"), 
-    config->weight_dtype, 
-    {config->vocab_size, config->dim, 0, 0}
-  );
+  rms_final_weight = get_tensor(yalm, "model.norm.weight", {config->dim, 0, 0, 0});
+  wcls = get_tensor(yalm, "model.output.weight", {config->vocab_size, config->dim, 0, 0});
 }
 
+/*
 void Model::cuda() {
   if (_device != Device::CPU) {
     return;
@@ -372,6 +343,7 @@ void Model::cuda() {
   rms_final_weight = static_cast<float*>(upload_cuda(rms_final_weight, config->dim * sizeof(float)));
   wcls = upload_cuda(wcls, config->vocab_size * config->dim * weight_size);
 }
+*/
 
 void Model::forward(InferenceState& s, int token, int pos, InferenceMode mode) {
   if (s.device() != _device) {
@@ -379,11 +351,11 @@ void Model::forward(InferenceState& s, int token, int pos, InferenceMode mode) {
     assert(false);
     return;
   }
-  if (_device == Device::CUDA) {
-    _forward_cuda(s, token, pos, mode);
-  } else {
+  //if (_device == Device::CUDA) {
+  //  _forward_cuda(s, token, pos, mode);
+  //} else {
     _forward_cpu(s, token, pos, mode);
-  }
+  //}
 }
 
 #if DEBUG_MODEL

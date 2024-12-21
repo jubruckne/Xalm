@@ -1,5 +1,6 @@
 #include "debug.h"
 #include "model.h"
+#include "types.h"
 
 template <typename T>
 bool BinaryDumper::save(const std::string& filename, const T* data, size_t count) {

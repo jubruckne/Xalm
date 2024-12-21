@@ -1,67 +1,29 @@
-#include "codec.h"
+#include "tensor.h"
 
 #include <fcntl.h>
 #include <iostream>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-std::string dtype_to_string(DType dtype) {
-  switch (dtype) {
-    case DType::F32: return "F32";
-    case DType::F16: return "F16";
-    case DType::BF16: return "BF16";
-    case DType::F8E5M2: return "F8_E5M2";
-    case DType::F8E4M3: return "F8_E4M3";
-    case DType::I32: return "I32";
-    case DType::I16: return "I16";
-    case DType::I8: return "I8";
-    case DType::U8: return "U8";
-  }
-  return "UNKNOWN";
-}
-
-size_t dtype_size(DType dtype) {
-  switch (dtype) {
-    case DType::F32: return 4;
-    case DType::F16: return 2;
-    case DType::BF16: return 2;
-    case DType::F8E5M2: return 1;
-    case DType::F8E4M3: return 1;
-    case DType::I32: return 4;
-    case DType::I16: return 2;
-    case DType::I8: return 1;
-    case DType::U8: return 1;
-  }
-  return 0;
-}
+#include "types.h"
 
 int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr, size_t bytes_size) {
   this->name = name;
-  std::string dtype_str = val.value("dtype", ""); 
+
+  const std::string dtype_str = val.value("dtype", "");
   if (dtype_str == "F32") {
-    this->dtype = DType::F32;
+    this->dtype = Type::F32;
   } else if (dtype_str == "F16") {
-    this->dtype = DType::F16;
-  } else if (dtype_str == "BF16") {
-    this->dtype = DType::BF16;
-  } else if (dtype_str == "F8_E5M2") {
-    this->dtype = DType::F8E5M2;
-  } else if (dtype_str == "F8_E4M3") {
-    this->dtype = DType::F8E4M3;
-  } else if (dtype_str == "I32") {
-    this->dtype = DType::I32;
-  } else if (dtype_str == "I16") {
-    this->dtype = DType::I16;
-  } else if (dtype_str == "I8") {
-    this->dtype = DType::I8;
+    this->dtype = Type::F16;
   } else if (dtype_str == "U8") {
-    this->dtype = DType::U8;
+    this->dtype = Type::U8;
+  } else if (dtype_str == "F8_E4M3") {
+    this->dtype = Type::F8;
   } else {
-    std::cerr << "bad dtype" << std::endl;
+    printf("bad dtype %s", dtype_str.c_str());
     return -1;
   }
-  size_t dsize = dtype_size(this->dtype);
+  const size_t dsize = this->dtype.size() / 8;
 
   size_t numel = 1;
   if (val.at("shape").size() > 4) {
@@ -78,8 +40,8 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   if (val.at("data_offsets").size() != 2) {
     return -1;
   }
-  size_t offset_start = static_cast<size_t>(val.at("data_offsets")[0]);
-  size_t offset_end = static_cast<size_t>(val.at("data_offsets")[1]);
+  const auto offset_start = static_cast<size_t>(val.at("data_offsets")[0]);
+  const auto offset_end = static_cast<size_t>(val.at("data_offsets")[1]);
   if (offset_start < 0 || offset_end <= offset_start || offset_end > bytes_size) {
     std::cerr << "bad offsets" << std::endl;
     return -1;
@@ -88,7 +50,7 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   this->size = offset_end - offset_start;
   // validate the shape matches the size
   if (numel * dsize != this->size) {
-    std::cerr << "bad size" << std::endl;
+    printf("bad size: (%zu * %zu = %zu), expected %zu", numel, dsize, numel * dsize, this->size);
     return -1;
   }
   return 0;
@@ -117,6 +79,8 @@ int YALMData::from_file(const std::string& filename) {
 #ifdef __linux__
   // increases readahead buffer size, resulting in faster cold loads
   posix_fadvise(fd, 0, size, POSIX_FADV_SEQUENTIAL);
+#elif defined(__APPLE__)
+    madvise(data, size, MADV_RANDOM | MADV_WILLNEED);
 #endif
 
   close(fd); // fd can be closed after mmap returns without invalidating the mapping
@@ -145,6 +109,9 @@ int YALMData::from_file(const std::string& filename) {
       metadata = val;
     } else {
       Tensor& tensor = tensors[key];
+      // printf("tensor: %s\n", key.c_str());
+      // printf("tensor: %s\n",val.dump().c_str());
+
       if (tensor.from_json(key, val, bytes_ptr, bytes_size) != 0) {
         munmap(data, size);
         return -1;
@@ -154,3 +121,56 @@ int YALMData::from_file(const std::string& filename) {
 
   return 0;
 }
+
+/*
+Tensor Tensor::convert_to(DType target_dtype) const {
+  assert(data != nullptr && "Tensor data cannot be null");
+
+  // Check if target dtype is supported
+  if (target_dtype != DType::F32 && target_dtype != DType::F16 && target_dtype != DType::F8) {
+    std::cerr << "convert_dtype only supports F32, F16, F8 conversions." << std::endl;
+    exit(0);
+  }
+
+  // If already the desired type, no conversion is needed
+  if (dtype == target_dtype) {
+    std::cerr << "Tensor is already of target dtype." << std::endl;
+    exit(0);
+  }
+
+  size_t num_elements = size / dtype_size(dtype);
+  std::vector<uint8_t> new_data(num_elements * dtype_size(target_dtype));
+
+  if (dtype == DType::F32 && target_dtype == DType::F16) {
+    // Convert from float (F32) to half-precision float (F16)
+    float* src = static_cast<float*>(data);
+    f16_t* dst = reinterpret_cast<f16_t*>(new_data.data());
+    for (size_t i = 0; i < num_elements; ++i) {
+      dst[i] = f16_t::from_float(src[i]);
+    }
+  } else if (dtype == DType::F16 && target_dtype == DType::F32) {
+    // Convert from half-precision float (F16) to float (F32)
+    f16_t* src = static_cast<f16_t*>(data);
+    float* dst = reinterpret_cast<float*>(new_data.data());
+    for (size_t i = 0; i < num_elements; ++i) {
+      dst[i] = f16_t::to_float(src[i]);
+    }
+  } else if (dtype == DType::F16 && target_dtype == DType::F8) {
+    // Convert from half-precision float (F16) to quarter float (f8)
+    f16_t* src = static_cast<f16_t*>(data);
+    f8_t* dst = reinterpret_cast<f8_t*>(new_data.data());
+    for (size_t i = 0; i < num_elements; ++i) {
+      dst[i] = f8_t::from(src[i]);
+    }
+  } else {
+    std::cerr << "Unsupported dtype conversion." << std::endl;
+    exit(0);
+  }
+
+  Tensor converted(this->name, target_dtype, this->shape, new uint8_t[new_data.size()], new_data.size());
+
+  std::memcpy(data, new_data.data(), new_data.size());
+
+  return converted;
+}
+*/

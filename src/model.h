@@ -1,10 +1,9 @@
 #pragma once
 
-#include "codec.h"
-
+#include "tensor.h"
+#include "types.h"
 #include <memory>
 #include <vector>
-#include <map>
 
 #define DEBUG_MODEL 0
 
@@ -21,15 +20,17 @@ enum class LayerNormType {
 
 enum class Device {
   CPU,
-  CUDA,
+  // CUDA,
 };
 
+/*
 extern "C" void* upload_cuda(void* host, size_t size);
 extern "C" void* download_cuda(void* device, size_t size, std::string debug);
 extern "C" void register_cuda_host(void* host, size_t size);
 extern "C" void free_cuda(void* device);
 extern "C" void unregister_cuda_host(void* host);
 extern "C" void set_cuda_device(int device);
+*/
 
 struct Config {
   int dim;                  // transformer input & output dimension
@@ -49,18 +50,18 @@ struct Config {
 
   // Data type of the weights according to config, used
   // to safety check tensor dtype at initialization time.
-  DType weight_dtype;
+  // Type weight_dtype = Type::Unknown;
 
   // If nonzero `context` is supplied, max sequence length is limited to `context`.
   void from_yalm(YALMData& yalm, int context = 0);
-  size_t active_bytes(size_t pos) const;
+  [[nodiscard]] size_t active_bytes(size_t pos) const;
 };
 
 // Buffer for all state used during a forward pass.
 // Members are reused across subsequent blocks and passes.
 // This lets us avoid allocations during inference.
 struct InferenceState {
-  InferenceState(const std::shared_ptr<Config> config);
+  InferenceState(std::shared_ptr<Config> config);
   ~InferenceState();
 
   // current activations
@@ -81,7 +82,7 @@ struct InferenceState {
   // LM head
   float* logits() const { return _logits; }
 
-  void cuda();
+  // void cuda();
   Device device() const { return _device; }
 
 private:
@@ -122,25 +123,19 @@ struct Block {
     const Tensor* w3
   );
   ~Block();
-
-  float* rms_att_weight() const { return _rms_att_weight; }
-  float* rms_ffn_weight() const { return _rms_ffn_weight; }
-  template <typename T>
-  T* wq() const { return static_cast<T*>(_wq); }
-  template <typename T>
-  T* wk() const { return static_cast<T*>(_wk); }
-  template <typename T>
-  T* wv() const { return static_cast<T*>(_wv); }
-  template <typename T>
-  T* wo() const { return static_cast<T*>(_wo); }
-  template <typename T>
-  T* w1() const { return static_cast<T*>(_w1); }
-  template <typename T>
-  T* w2() const { return static_cast<T*>(_w2); }
-  template <typename T>
-  T* w3() const { return static_cast<T*>(_w3); }
+  int layer_i() const { return _layer_i; }
+  const Tensor* rms_att_weight() const { return _rms_att_weight; }
+  const Tensor* rms_ffn_weight() const { return _rms_ffn_weight; }
+  const Tensor* wq() const { return (_wq); }
+  const Tensor* wk() const { return (_wk); }
+  const Tensor* wv() const { return (_wv); }
+  const Tensor* wo() const { return (_wo); }
+  const Tensor* w1() const { return (_w1); }
+  const Tensor* w2() const { return (_w2); }
+  const Tensor* w3() const { return (_w3); }
   f16_t* key_cache() const { return _key_cache; }
   f16_t* value_cache() const { return _value_cache; }
+
 
   // Compute forward pass for this block and update the inference state accordingly.
   // PRECONDITIONS: 
@@ -154,10 +149,9 @@ struct Block {
     int kv_len          // number of tokens in the kv cache that we will attend over
   ) const;
 
-  void cuda();
+  // void cuda();
 
 private:
-  template <typename T>
   void _block_cpu(
     InferenceState& s,  // inference state
     int pos,            // index of the current token in the sequence
@@ -165,36 +159,35 @@ private:
     int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
     int kv_len          // number of tokens in the kv cache that we will attend over
   ) const;
-  template <typename T>
+
+  /*template <typename T>
   void _block_cuda(
     InferenceState& s,  // inference state
     int pos,            // index of the current token in the sequence
     int kv_sink,        // number of sink tokens currently in the KV cache
     int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
     int kv_len          // number of tokens in the kv cache that we will attend over
-  ) const;
+  ) const;*/
 
-#if DEBUG_MODEL
   int _layer_i = 0;
-#endif
 
   std::shared_ptr<Config> _config;
   Device _device = Device::CPU;
 
   // weights for norms
-  float* _rms_att_weight = nullptr; // (dim) rmsnorm weights
-  float* _rms_ffn_weight = nullptr; // (dim)
+  const Tensor *_rms_att_weight = nullptr; // (dim) rmsnorm weights
+  const Tensor *_rms_ffn_weight = nullptr; // (dim)
 
   // weights for self-attention matmuls
-  void* _wq = nullptr; // (n_heads * head_dim, dim)
-  void* _wk = nullptr; // (n_kv_heads * head_dim, dim)
-  void* _wv = nullptr; // (n_kv_heads * head_dim, dim)
-  void* _wo = nullptr; // (dim, n_heads * head_dim)
+  const Tensor *_wq = nullptr; // (n_heads * head_dim, dim)
+  const Tensor *_wk = nullptr; // (n_kv_heads * head_dim, dim)
+  const Tensor *_wv = nullptr; // (n_kv_heads * head_dim, dim)
+  const Tensor *_wo = nullptr; // (dim, n_heads * head_dim)
   
   // weights for ffn
-  void* _w1 = nullptr; // (n_experts?, hidden_dim, dim)
-  void* _w2 = nullptr; // (n_experts?, dim, hidden_dim)
-  void* _w3 = nullptr; // (n_experts?, hidden_dim, dim) - GLU weights
+  const Tensor *_w1 = nullptr; // (n_experts?, hidden_dim, dim)
+  const Tensor *_w2 = nullptr; // (n_experts?, dim, hidden_dim)
+  const Tensor *_w3 = nullptr; // (n_experts?, hidden_dim, dim) - GLU weights
 
   // kv cache
   f16_t* _key_cache = nullptr;   // (seq_len, n_kv_heads * head_dim)
@@ -212,11 +205,11 @@ struct Model {
   std::vector<std::shared_ptr<Block>> blocks;
   
   // token embedding table
-  void* token_embedding_table = nullptr; // (vocab_size, dim)
+  const Tensor *token_embedding_table = nullptr; // (vocab_size, dim)
   // final norm
-  float* rms_final_weight = nullptr; // (dim,)
+  const Tensor* rms_final_weight = nullptr; // (dim,)
   // classifier weights for the logits, on the last layer
-  void* wcls = nullptr; // (vocab_size, dim)
+  const Tensor *wcls = nullptr; // (vocab_size, dim)
 
   Model(YALMData& yalm, int context = 0);
   
@@ -226,7 +219,7 @@ struct Model {
 private:
   void _forward_cpu(InferenceState& s, int token, int pos, InferenceMode mode);
   void _forward_cuda(InferenceState& s, int token, int pos, InferenceMode mode);
-  void _copy_embedding(InferenceState& s, int token);
+  void _copy_embedding(const InferenceState& s, int token) const;
 
   Device _device = Device::CPU;
 };

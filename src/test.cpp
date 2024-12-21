@@ -5,7 +5,7 @@
 #include <thread>
 #include <vector>
 
-#include "immintrin.h"
+// #include "immintrin.h"
 
 #include "model.h"
 #include "time.h"
