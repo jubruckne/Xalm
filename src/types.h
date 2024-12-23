@@ -9,12 +9,13 @@
   #include <arm_neon.h>  // ARM NEON
 #endif
 
+/*
 enum struct DType {
   F32,
   F16,
   F8,
   U8,
-};
+};*/
 
 
 struct Type {
@@ -29,7 +30,7 @@ struct Type {
 
   constexpr operator int() const { return _value; }
 
-  [[nodiscard]] constexpr size_t size() const {
+  [[nodiscard]] size_t bit_size() const {
     return _size;
   }
 
@@ -78,6 +79,7 @@ constexpr Type Type::F16{2, sizeof(uint16_t) * 8};
 constexpr Type Type::F8{3, sizeof(uint8_t) * 8};
 constexpr Type Type::U8{4, sizeof(uint8_t) * 8};
 
+/*
 inline std::string_view dtype_to_string(DType dtype) {
   switch (dtype) {
     case DType::F32: return "F32";
@@ -96,7 +98,7 @@ inline size_t dtype_size(DType dtype) {
     case DType::U8: return 1;
   }
   return 0;
-}
+}*/
 
 struct f16_t {
   uint16_t data;
@@ -275,7 +277,6 @@ template<int N> constexpr float EXP2() {
   if constexpr (N<0) return EXP2<N+1>()/2;
 }
 
-// 2^N avec N>0 en entier
 template<int N> constexpr int EXP_I2() {
   if constexpr (N==0) return 1;
   if constexpr (N>0) return EXP_I2<N-1>()*2;
@@ -285,33 +286,30 @@ template<int E, int M> requires (E+M == 7)
 struct f8_t {
 private:
   uint8_t bits = 0;
- // static constexpr int M=7-E;
+
+  explicit f8_t(const uint8_t bits) : bits(bits) {}
+
   static constexpr int E_BIAS=EXP2<E-1>()-1;
   static constexpr float MAX() { return (2-EXP2<-M+1>())*EXP2<EXP_I2<E-1>()>(); }
   static constexpr float MIN() { return EXP2<-M>()*EXP2<2-EXP_I2<E-1>()>(); }
-  //=============================================
 public:
   static f8_t from(const float value) {
     union {
       float f;
       uint32_t bits;
     } in = {value};
-    // le signe:
-    auto bits = (in.bits >> 24) & 0x80;
-    // la valeur sans la signe!
+    uint8_t bits = (in.bits >> 24) & 0x80;
     in.bits &= 0x7fffffff;
-    //GGML_ASSERT(in.bits < 0x7f800000); // +/- infini ou NAN
     if (in.f >= MAX()) {
       bits |= 0x7E;
-    } else if (in.f<MIN()) { // => 0.
-      // OK: S.0000000
+    } else if (in.f<MIN()) {
     } else {
       in.f *= EXP2<E_BIAS-127>();
-      in.bits += 1<<(22-M); // for rounding
+      in.bits += 1<<(22-M);
       bits |= (in.bits >> (23-M)) & 0x7F;
     }
 
-    return FP8(bits);
+    return f8_t(bits);
   }
 
   static float to_float(const f8_t value) {
@@ -319,7 +317,6 @@ public:
       float f;
       uint32_t bits;
     } out = {0};
-    // le signe:
     out.bits = value.bits & 0x80;
     out.bits <<= 24;
     uint32_t _bits = value.bits & 0x7F;

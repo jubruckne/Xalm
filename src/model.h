@@ -276,6 +276,9 @@ void mha_cuda(
   int head_dim, int kv_len, int max_seq_len, int n_heads, int n_kv_heads
 );
 
+void matmul(float* xout, const float* x, const Tensor* w, const int n, const int d);
+void matmul(const Tensor& xout, const Tensor& a, const Tensor& b);
+
 void matmul_cpu(float* xout, float* x, float* w, int n, int d);
 void matmul_cpu(float* xout, float* x, f16_t* w, int n, int d);
 template <typename T>

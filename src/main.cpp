@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdio.h>
 
+#include "debug.h"
 #include "fmt/format.h"
 
 #include "tensor.h"
@@ -143,6 +144,36 @@ void run_completion(
     ((double)read_bytes / 1e9) / elapsed_s,
     elapsed_s
   ) << std::endl;
+}
+
+void run_test() {
+	printf("test start\n");
+
+	Tensor a1 = Tensor::uniform(Type::F32, {4096*8, 4096}, 0, 1, "a");
+	Tensor b0 = Tensor::uniform(Type::F32, {4096*8, 4096}, 0, 1, "b0");
+	Tensor b1 = Tensor::uniform(Type::F16, {4096*8, 4096}, 0, 1, "b1");
+	Tensor b2 = Tensor::uniform(Type::F8, {4096*8, 4096}, 0, 1, "b2");
+	Tensor out1 = Tensor::zeroes(Type::F32, {4096*8, 4096}, "out");
+
+  printf("%s: size: %zu, length: %zu\n", a1.name.c_str(), a1.size, a1.linear_length);
+  printf("%s: size: %zu, length: %zu\n", b0.name.c_str(), b0.size, b0.linear_length);
+  printf("%s: size: %zu, length: %zu\n", b1.name.c_str(), b1.size, b1.linear_length);
+  printf("%s: size: %zu, length: %zu\n", b2.name.c_str(), b2.size, b2.linear_length);
+  printf("%s: size: %zu, length: %zu\n", out1.name.c_str(), out1.size, out1.linear_length);
+
+  fflush(stdout);
+
+  for (int i = 0; i < 256; i++) {
+    matmul(out1, a1, b0);
+    fflush(stdout);
+
+    matmul(out1, a1, b1);
+    fflush(stdout);
+
+    matmul(out1, a1, b2);
+    fflush(stdout);
+  }
+
 }
 
 void run_perplexity(
@@ -333,7 +364,7 @@ int main(int argc, char* argv[]) {
   std::string checkpoint_path = "";    // e.g. out/model.bin
   // Options
   std::string device = "cpu";         // cpu or cuda
-  std::string mode = "completion";     // completion, passkey, or perplexity
+  std::string mode = "test";     // completion, passkey, or perplexity
   std::string prompt = "";             // prompt string
   std::string prompt_path = "";        // prompt file path
   int context = 0;
@@ -451,10 +482,14 @@ int main(int argc, char* argv[]) {
 
   if (mode == "completion") {
     run_completion(checkpoint_path, device, prompt, context, num_steps);
+    Profiler::report();
   } else if (mode == "passkey") {
     run_passkey(checkpoint_path, device, context, n_junk, passkey_pos);
   } else if (mode == "perplexity") {
     run_perplexity(checkpoint_path, device, prompt, context);
+  } else if(mode == "test") {
+	  run_test();
+    Profiler::report();
   }
 
   return 0;

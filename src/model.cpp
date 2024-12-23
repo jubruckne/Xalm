@@ -92,7 +92,7 @@ const Tensor* check_tensor(const Tensor* tensor, std::array<int, 4> shape) {
       << fmt::format("expected: shape=[{},{},{},{}]", shape[0], shape[1], shape[2], shape[3])
       << std::endl;
     std::cerr 
-      << fmt::format("got: dtype={}, shape=[{},{},{},{}]", tensor->dtype.to_string(), tensor->shape[0], tensor->shape[1], tensor->shape[2], tensor->shape[3])
+      << fmt::format("got: dtype={}, shape=[{},{},{},{}]", tensor->type.to_string(), tensor->shape[0], tensor->shape[1], tensor->shape[2], tensor->shape[3])
       << std::endl;
     assert(false);
   }
@@ -125,7 +125,7 @@ const Tensor* get_tensor(const YALMData& yalm, const std::string& key, std::arra
       << fmt::format("expected: shape=[{},{},{},{}]", shape[0], shape[1], shape[2], shape[3])
       << std::endl;
     std::cerr
-      << fmt::format("got: dtype={}, shape=[{},{},{},{}]", tensor.dtype.to_string(), tensor.shape[0], tensor.shape[1], tensor.shape[2], tensor.shape[3])
+      << fmt::format("got: dtype={}, shape=[{},{},{},{}]", tensor.type.to_string(), tensor.shape[0], tensor.shape[1], tensor.shape[2], tensor.shape[3])
       << std::endl;
     assert(false);
     return nullptr;

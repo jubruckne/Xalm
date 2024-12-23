@@ -1,13 +1,32 @@
-CC = clang
-CXX = clang
+# Compiler and tools
+CC := clang
+CXX := clang++
+MAKEFLAGS += -r -j
 
-MAKEFLAGS+=-r -j
+UNAME := $(shell uname)
 
-UNAME=$(shell uname)
-# NVCC?=nvcc
+BUILD := build
+SRC_DIR := src
+VENDOR_DIR := vendor
+ASM_DIR := $(BUILD)/asm
+BIN_DIR := .
 
-BUILD=build
-ASM_DIR=$(BUILD)/asm
+# Detect OS-specific settings
+ifeq ($(UNAME), Darwin)
+    # macOS settings
+    OPENMP_FLAGS := -Xpreprocessor -fopenmp
+    OPENMP_LIB := -lomp
+    LIBOMP_INCLUDE := /opt/homebrew/opt/libomp/include
+    LIBOMP_LIB := /opt/homebrew/opt/libomp/lib
+else
+    # Assume Linux (Ubuntu) settings
+    OPENMP_FLAGS := -fopenmp
+    OPENMP_LIB := -fopenmp
+    LIBOMP_INCLUDE :=
+    LIBOMP_LIB :=
+endif
+CFLAGS := -g -Wall -Wpointer-arith -march=native -O3 -Werror -I$(VENDOR_DIR) -std=c++23 $(OPENMP_FLAGS) -I$(LIBOMP_INCLUDE)
+LDFLAGS := -lm $(OPENMP_LIB) -L$(LIBOMP_LIB)  #-lstdc++
 
 # compile .c, .cpp, .cu files
 SOURCES=$(filter-out src/test.cpp,$(wildcard src/*.c))
@@ -20,8 +39,12 @@ SOURCES+=$(wildcard vendor/*.cpp)
 #SOURCES+=$(wildcard vendor/*.cu)
 
 # Define test sources separately
-TEST_SOURCES=src/test.cpp
-TEST_SOURCES+=$(filter-out src/main.cpp,$(SOURCES))
+TEST_SOURCES=$(filter-out src/main.cpp,$(wildcard src/*.c))
+TEST_SOURCES+=$(filter-out src/main.cpp,$(wildcard src/*.cc))
+TEST_SOURCES+=$(filter-out src/main.cpp,$(wildcard src/*.cpp))
+TEST_SOURCES+=$(wildcard vendor/*.c)
+TEST_SOURCES+=$(wildcard vendor/*.cc)
+TEST_SOURCES+=$(wildcard vendor/*.cpp)
 
 OBJECTS=$(SOURCES:%=$(BUILD)/%.o)
 TEST_OBJECTS=$(TEST_SOURCES:%=$(BUILD)/%.o)
@@ -30,9 +53,6 @@ TEST_ASM_FILES=$(patsubst %.cpp,$(ASM_DIR)/%.s,$(filter %.cpp,$(TEST_SOURCES)))
 
 BINARY=$(BUILD)/main
 TEST_BINARY=$(BUILD)/test
-
-CFLAGS=-g -Wall -Wpointer-arith -Werror -O3 -Ivendor -std=c++23 -Xpreprocessor -fopenmp -I/opt/homebrew/opt/libomp/include
-LDFLAGS=-lstdc++ -lm -L/opt/homebrew/opt/libomp/lib -lomp
 
 #LDFLAGS+=-lcudart
 #

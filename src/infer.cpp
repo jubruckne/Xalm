@@ -3,6 +3,8 @@
 #include <assert.h>
 #include <cfloat>
 #include <math.h>
+
+#include "debug.h"
 #include "types.h"
 
 #if DEBUG_MODEL
@@ -25,12 +27,19 @@ static void save_debug_tensor(const std::string& name, T* x, size_t size) {
 }
 #endif
 
-static void matmul(float* xout, const float* x, const float* w, const int n, const int d) {
+static void matmul(float* __restrict__ xout, const float* __restrict__ x, const float* __restrict__ w, const int n, const int d) {
   // W (d,n) @ x (n,) -> xout (d,)
-  int i;
-#pragma omp parallel for private(i)
-  for (i = 0; i < d; i++) {
+  profile();
+
+  assert(n % 16 == 0);
+  assert(d % 16 == 0);
+  assert(reinterpret_cast<uintptr_t>(xout) % 16 == 0);
+  assert(reinterpret_cast<uintptr_t>(x) % 16 == 0);
+  assert(reinterpret_cast<uintptr_t>(w) % 16 == 0);
+
+  for (int i = 0; i < d; i++) {
     float val = 0.0f;
+    #pragma omp simd
     for (int j = 0; j < n; j++) {
       val += w[i * n + j] * x[j];
     }
@@ -40,6 +49,8 @@ static void matmul(float* xout, const float* x, const float* w, const int n, con
 
 static void matmul(float* xout, const float* x, const f16_t* w, const int n, const int d) {
 	// W (d,n) @ x (n,) -> xout (d,)
+  profile();
+
 	int i;
 #pragma omp parallel for private(i)
 	for (i = 0; i < d; i++) {
@@ -51,38 +62,53 @@ static void matmul(float* xout, const float* x, const f16_t* w, const int n, con
 	}
 }
 
-static void matmul(float* xout, const float* x, const f8e4m3_t* w, const int n, const int d) {
+static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e4m3_t* __restrict__ w, const int n, const int d) {
   // W (d,n) @ x (n,) -> xout (d,)
+  profile();
+  assert(n % 16 == 0);
+  assert(d % 16 == 0);
+  assert(reinterpret_cast<uintptr_t>(xout) % 16 == 0);
+  assert(reinterpret_cast<uintptr_t>(x) % 16 == 0);
+  assert(reinterpret_cast<uintptr_t>(w) % 16 == 0);
+
   int i;
+  int j;
 #pragma omp parallel for private(i)
   for (i = 0; i < d; i++) {
     float val = 0.0f;
-    for (int j = 0; j < n; j++) {
+#pragma omp simd
+    for (j = 0; j < n; j++) {
       val += f8e4m3_t::to_float(w[i * n + j]) * x[j];
     }
     xout[i] = val;
   }
 }
 
-static void matmul(float* xout, const float* x, const Tensor* w, const int n, const int d) {
-  switch (w->dtype) {
+void matmul(float* xout, const float* x, const Tensor* w, const int n, const int d) {
+  switch (w->type) {
     case Type::F32: {
       matmul(xout, x, static_cast<const float*>(w->data), n, d);
-      break;
+      return;
     }
     case Type::F16: {
       matmul(xout, x, static_cast<const f16_t*>(w->data), n, d);
-      break;
+      return;
     }
     case Type::F8: {
       matmul(xout, x, static_cast<const f8e4m3_t*>(w->data), n, d);
-      break;
+      return;
     }
     default: {
-      printf("matmul: unsupported data type: %s\n", w->dtype.to_string().data());
+      printf("matmul: unsupported data type: %s\n", w->type.to_string().data());
       assert(false);
     }
   }
+}
+
+void matmul(const Tensor& xout, const Tensor& a, const Tensor& b) {
+	const auto n = a.shape[0];
+	const auto d = a.shape[1];
+	matmul(static_cast<float*>(xout.data), static_cast<const float*>(a.data), &b, n, d);
 }
 
 static void rmsnorm(float* o, const float* x, const float* weight, const int size, const float eps) {
@@ -345,13 +371,6 @@ void mha_cpu(
   }
 }
 
-void matmul_cpu(float* xout, float* x, float* w, int n, int d) {
-  matmul(xout, x, w, n, d);
-}
-void matmul_cpu(float* xout, float* x, f16_t* w, int n, int d) {
-  matmul(xout, x, w, n, d);
-}
-
 void ffn_cpu(
   float* xout, float* x, 
   float* w1, float* w2, float* w3, 
@@ -388,7 +407,7 @@ void ffn_cpu(
 void Model::_copy_embedding(const InferenceState& s, const int token) const {
   const Config& c = *config;
 
-  switch (token_embedding_table->dtype) {
+  switch (token_embedding_table->type) {
     case Type::F32: {
       const auto* emb = static_cast<float*>(token_embedding_table->data);
       for (int i = 0; i < c.dim; ++i) {
@@ -448,21 +467,5 @@ void Model::_forward_cpu(InferenceState& s, const int token, const int pos, cons
   }
 
   // classifier into logits
-  switch (wcls->dtype) {
-    case Type::F32: {
-      matmul(s.logits(), s.x(), static_cast<float*>(wcls->data), c.dim, c.vocab_size);
-      break;
-    }
-    case Type::F16: {
-      matmul(s.logits(), s.x(), static_cast<f16_t*>(wcls->data), c.dim, c.vocab_size);
-      break;
-    }
-    case Type::F8: {
-      matmul(s.logits(), s.x(), static_cast<f8e4m3_t*>(wcls->data), c.dim, c.vocab_size);
-      break;
-    }
-    default: {
-      assert(false && "unsupported weight dtype");
-    }
-  }
+  matmul(s.logits(), s.x(), wcls, c.dim, c.vocab_size);
 }

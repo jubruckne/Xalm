@@ -2,28 +2,137 @@
 
 #include <fcntl.h>
 #include <iostream>
+#include <random>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
 #include "types.h"
+
+size_t Tensor::calculate_size(Type type, const std::array<int, 4>& shape) {
+  size_t num_elements = 1;
+  for (const int dim : shape) {
+    if (dim == 0) break;
+    num_elements *= dim;
+  }
+  return num_elements * type.bit_size() / 8;
+}
+
+Tensor Tensor::view(void* data, size_t size, Type type, const std::array<int, 4>& shape, const std::string& name) {
+  if (const size_t expected_size = calculate_size(type, shape); size != expected_size) {
+    throw std::invalid_argument("External data size does not match expected size for the given shape and type.");
+  }
+  return Tensor(name, type, shape, data, size, false);
+}
+
+Tensor Tensor::zeroes(Type type, const std::array<int, 4> &shape, const std::string &name) {
+  const size_t size = calculate_size(type, shape);
+  void* ptr = std::aligned_alloc(16, size);
+  if (!ptr) {
+    throw std::bad_alloc();
+  }
+
+  return Tensor(name, type, shape, ptr, size, true);
+}
+
+Tensor Tensor::uniform(Type type, const std::array<int, 4>& shape, const float min, const float max, const std::string& name) {
+  auto t = Tensor::zeroes(type, shape, name);
+
+  std::default_random_engine generator(42);
+  std::uniform_real_distribution distribution(min, max);
+
+  switch (type) {
+    case Type::F32: {
+      auto* ptr = static_cast<float*>(t.data);
+      for (size_t i = 0; i < t.linear_length; ++i) {
+        ptr[i] = distribution(generator);
+      }
+      break;
+    }
+    case Type::F16: {
+      auto* ptr = static_cast<f16_t*>(t.data);
+      for (size_t i = 0; i < t.linear_length; ++i) {
+        ptr[i] = f16_t::from_float(distribution(generator));
+      }
+      break;
+    }
+    case Type::F8: {
+      auto* ptr = static_cast<f8e4m3_t*>(t.data);
+      for (size_t i = 0; i < t.linear_length; ++i) {
+        ptr[i] = f8e4m3_t::from(distribution(generator));
+      }
+      break;
+    }
+    default: throw std::invalid_argument("Unknown type.");
+  }
+
+  return t;
+}
+
+Tensor::Tensor(): type(Type::Unknown), size(0) {
+  printf("Tensor::Tensor()\n");
+  fflush(stdout);
+  for (size_t i = 0; i < 4; i++) {
+    shape[i] = 0;
+  }
+}
+
+Tensor::~Tensor() {
+  printf("Tensor::~Tensor()\n");
+  fflush(stdout);
+
+  if (mem_owned && data) {
+    std::free(data);
+  }
+}
+
+Tensor::Tensor(std::string name, const Type type, const std::array<int, 4>& shape, void* data, const size_t size, const bool mem_owned)
+    : name(std::move(name)), type(type), size(size), mem_owned(mem_owned) {
+  if (shape.size() > 4) {
+    throw std::invalid_argument("Shape cannot have more than 4 dimensions");
+  }
+
+  if (const size_t expected_size = calculate_size(type, shape); size != expected_size) {
+    throw std::invalid_argument("External data size does not match expected size for the given shape and type.");
+  }
+
+  size_t numel = 1;
+  for (size_t i = 0; i < shape.size(); i++) {
+    if (shape[i] < 0) {
+      throw std::invalid_argument("Shape dimensions must be positive");
+    }
+    this->shape[i] = shape[i];
+    if (shape[i] != 0) {
+      numel *= shape[i];
+    }
+  }
+  for (size_t i = shape.size(); i < 4; i++) {
+    this->shape[i] = 1;
+  }
+
+  const size_t dsize = type.bit_size() / 8;
+  this->linear_length = numel;
+  this->size = numel * dsize;
+  this->data = data;
+}
 
 int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr, size_t bytes_size) {
   this->name = name;
 
   const std::string dtype_str = val.value("dtype", "");
   if (dtype_str == "F32") {
-    this->dtype = Type::F32;
+    this->type = Type::F32;
   } else if (dtype_str == "F16") {
-    this->dtype = Type::F16;
+    this->type = Type::F16;
   } else if (dtype_str == "U8") {
-    this->dtype = Type::U8;
+    this->type = Type::U8;
   } else if (dtype_str == "F8_E4M3") {
-    this->dtype = Type::F8;
+    this->type = Type::F8;
   } else {
     printf("bad dtype %s", dtype_str.c_str());
     return -1;
   }
-  const size_t dsize = this->dtype.size() / 8;
+  const size_t dsize = this->type.bit_size() / 8;
 
   size_t numel = 1;
   if (val.at("shape").size() > 4) {
