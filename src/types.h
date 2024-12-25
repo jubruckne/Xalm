@@ -1,6 +1,5 @@
 #pragma once
 #include <cstdint>
-#include <cmath>
 #include <cassert>
 
 #if defined(__AVX2__) && defined(__F16C__)
@@ -8,15 +7,6 @@
 #elif defined(__ARM_NEON) || defined(__aarch64__)
   #include <arm_neon.h>  // ARM NEON
 #endif
-
-/*
-enum struct DType {
-  F32,
-  F16,
-  F8,
-  U8,
-};*/
-
 
 struct Type {
   static const Type Unknown;
@@ -135,7 +125,7 @@ struct f16_t {
     __fp16 h = *reinterpret_cast<const __fp16*>(&value); // ARM path
     return static_cast<float>(h);
 #else
-    return half_to_float_fallback(data);
+    return half_to_float_fallback(value.data);
 #endif
   }
 

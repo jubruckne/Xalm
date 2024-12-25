@@ -23,8 +23,8 @@ else
     # Assume Linux (Ubuntu) settings
     OPENMP_FLAGS := -fopenmp
     OPENMP_LIB := -fopenmp
-    LIBOMP_INCLUDE :=
-    LIBOMP_LIB :=
+    LIBOMP_INCLUDE := /usr/include
+    LIBOMP_LIB := /usr/lib/x86_64-linux-gnu
     LDFLAGS := -stdlib=libstdc++ -lm $(OPENMP_LIB) -L$(LIBOMP_LIB)  #
 endif
 CFLAGS := -g -Wall -Wpointer-arith -march=native -O3 -Werror -I$(VENDOR_DIR) -std=c++23 $(OPENMP_FLAGS) -I$(LIBOMP_INCLUDE)

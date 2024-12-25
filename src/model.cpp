@@ -6,7 +6,6 @@
 #include <cfloat>
 #include "fmt/format.h"
 #include <iostream>
-#include <limits.h>
 #include "types.h"
 #include <string>
 
@@ -53,8 +52,6 @@ void Config::from_yalm(YALMData& yalm, int context) {
   }
 
   qkv_clip = yalm.metadata.contains("qkv_clip") ? std::stof(yalm.metadata.at("qkv_clip").get<std::string>()) : FLT_MAX;
-
-  const auto dtype = yalm.metadata.at("dtype").get<std::string>();
 }
 
 size_t Config::active_bytes(size_t pos) const {

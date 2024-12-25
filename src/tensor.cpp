@@ -150,7 +150,27 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
     std::cerr << "bad offsets" << std::endl;
     return -1;
   }
-  this->data = (char*)bytes_ptr + offset_start;
+  this->data = static_cast<char*>(bytes_ptr) + offset_start;
+
+  #if defined(__AVX__)
+  constexpr int need_align = 32;
+  #elif defined(__ARM_NEON)
+  constexpr int need_align = 16;
+  #else
+  constexpr int need_align = 1;
+  #endif
+
+  if (reinterpret_cast<uintptr_t>(this->data) % need_align != 0) {
+    std::printf("%s: data alignment is not a multiple of %i. Allocating aligned memory.\n", name.c_str(), need_align);
+
+    void* aligned_data = std::aligned_alloc(need_align, size);
+    if (!aligned_data) {
+      throw std::bad_alloc();
+    }
+    std::memcpy(aligned_data, this->data, this->size);
+    this->data = aligned_data;
+  }
+
   this->size = offset_end - offset_start;
   // validate the shape matches the size
   if (numel * dsize != this->size) {
