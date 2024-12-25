@@ -152,13 +152,14 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   }
   this->data = static_cast<char*>(bytes_ptr) + offset_start;
 
-  #if defined(__AVX__)
+  #if defined(__AVX__) || defined(__AVX2__)
   constexpr int need_align = 32;
   #elif defined(__ARM_NEON)
   constexpr int need_align = 16;
   #else
   constexpr int need_align = 1;
   #endif
+  std::printf("%s: checking data alignment for %i\n", name.c_str(), need_align);
 
   if (reinterpret_cast<uintptr_t>(this->data) % need_align != 0) {
     std::printf("%s: data alignment is not a multiple of %i. Allocating aligned memory.\n", name.c_str(), need_align);
