@@ -18,15 +18,16 @@ ifeq ($(UNAME), Darwin)
     OPENMP_LIB := -lomp
     LIBOMP_INCLUDE := /opt/homebrew/opt/libomp/include
     LIBOMP_LIB := /opt/homebrew/opt/libomp/lib
+    LDFLAGS := -lm $(OPENMP_LIB) -L$(LIBOMP_LIB)
 else
     # Assume Linux (Ubuntu) settings
     OPENMP_FLAGS := -fopenmp
     OPENMP_LIB := -fopenmp
     LIBOMP_INCLUDE :=
     LIBOMP_LIB :=
+    LDFLAGS := -lstdc++ -lm $(OPENMP_LIB) -L$(LIBOMP_LIB)  #
 endif
 CFLAGS := -g -Wall -Wpointer-arith -march=native -O3 -Werror -I$(VENDOR_DIR) -std=c++23 $(OPENMP_FLAGS) -I$(LIBOMP_INCLUDE)
-LDFLAGS := -lm $(OPENMP_LIB) -L$(LIBOMP_LIB)  #-lstdc++
 
 # compile .c, .cpp, .cu files
 SOURCES=$(filter-out src/test.cpp,$(wildcard src/*.c))
