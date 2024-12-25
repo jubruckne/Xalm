@@ -481,7 +481,7 @@ void Model::_forward_cpu(InferenceState& s, const int token, const int pos, cons
   // final layer norm
   switch (c.norm_type) {
     case LayerNormType::RMSNorm: {
-      assert(rms_final_weight()->type == Type::F32);
+      assert(rms_final_weight->type == Type::F32);
       rmsnorm(s.x(), s.x(), static_cast<const float *>(rms_final_weight->data), c.dim, c.norm_eps);
       break;
     }
