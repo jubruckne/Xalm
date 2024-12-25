@@ -4,7 +4,7 @@
 #include <cfloat>
 #include <math.h>
 
-#include "debug.h"
+#include "profiler.h"
 #include "types.h"
 
 #if DEBUG_MODEL
@@ -27,9 +27,10 @@ static void save_debug_tensor(const std::string& name, T* x, size_t size) {
 }
 #endif
 
+
 static void matmul(float* __restrict__ xout, const float* __restrict__ x, const float* __restrict__ w, const int n, const int d) {
   // W (d,n) @ x (n,) -> xout (d,)
-  profile();
+  profile(std::format("{}x{}", n,d));
 
   assert(n % 16 == 0);
   assert(d % 16 == 0);
@@ -49,7 +50,7 @@ static void matmul(float* __restrict__ xout, const float* __restrict__ x, const 
 
 static void matmul(float* xout, const float* x, const f16_t* w, const int n, const int d) {
 	// W (d,n) @ x (n,) -> xout (d,)
-  profile();
+  profile(std::format("{}x{}", n,d));
 
 	int i;
 #pragma omp parallel for private(i)
@@ -64,7 +65,8 @@ static void matmul(float* xout, const float* x, const f16_t* w, const int n, con
 
 static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e4m3_t* __restrict__ w, const int n, const int d) {
   // W (d,n) @ x (n,) -> xout (d,)
-  profile();
+  profile(std::format("{}x{}", n,d));
+
   assert(n % 16 == 0);
   assert(d % 16 == 0);
   assert(reinterpret_cast<uintptr_t>(xout) % 16 == 0);
@@ -112,6 +114,8 @@ void matmul(const Tensor& xout, const Tensor& a, const Tensor& b) {
 }
 
 static void rmsnorm(float* o, const float* x, const float* weight, const int size, const float eps) {
+  profile();
+
   float rms = 0.0f;
   for (int i = 0; i < size; ++i) {
     rms += x[i] * x[i];
@@ -124,6 +128,8 @@ static void rmsnorm(float* o, const float* x, const float* weight, const int siz
 }
 
 [[maybe_unused]] static void layernorm(float* o, const float* x, const float* weight, const float* bias, const int size, const float eps) {
+  profile();
+
   float mean = 0.0f;
   for (int i = 0; i < size; ++i) {
     mean += x[i];
@@ -148,6 +154,8 @@ static void rmsnorm(float* o, const float* x, const float* weight, const int siz
 
 // Compute the softmax of an input vector `x` of length `size` and store it in `o`.
 static void softmax(float* o, float* x, int size) {
+  profile();
+
   float score_max = -FLT_MAX;
   for (int i = 0; i < size; ++i) {
     if (x[i] > score_max) {
@@ -178,6 +186,8 @@ inline float clip(float x, float v) {
 
 // TODO annotate me
 static void rope(float* vec, int d, int head_dim, int pos, float theta, int rotary_dim) {
+  profile();
+
   for (int i = 0; i < d; i += 2) {
     int j_head = i % head_dim;
     float freq = j_head >= rotary_dim ? 0.f : 1.0f / powf(theta, (float)j_head / (float)rotary_dim);
@@ -238,6 +248,8 @@ void Block::_block_cpu(
   int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
   int kv_len          // number of tokens in the kv cache that we will attend over
 ) const {
+  profile();
+
   assert(_config);
   const Config& c = *_config;
 
@@ -356,6 +368,8 @@ void mha_cpu(
   float* q,     // (n_heads, head_dim)
   int head_dim, int kv_len, int max_seq_len, int n_heads, int n_kv_heads
 ) {
+  profile();
+
   // Multihead attention. Iterate over all heads.
   int q_per_kv_head = n_heads / n_kv_heads; // query heads per kv head (for MultiQueryAttention/GroupedQueryAttention)
   int h;
@@ -377,8 +391,10 @@ void ffn_cpu(
   int hidden_dim, int dim,
   ActivationType act
 ) {
-  float* hb = new float[hidden_dim];
-  float* hb2 = new float[hidden_dim];
+  profile();
+
+  auto* hb = new float[hidden_dim];
+  auto* hb2 = new float[hidden_dim];
   // mix self.w2(F.silu(self.w1(x)) * self.w3(x))
   // Note this is a feedforward with a GLU, not a simple MLP.
   matmul(hb, x, w1, dim, hidden_dim);
@@ -405,6 +421,8 @@ void ffn_cpu(
 }
 
 void Model::_copy_embedding(const InferenceState& s, const int token) const {
+  profile();
+
   const Config& c = *config;
 
   switch (token_embedding_table->type) {
@@ -435,7 +453,7 @@ void Model::_copy_embedding(const InferenceState& s, const int token) const {
   }
 }
 
-void Model::_forward_cpu(InferenceState& s, const int token, const int pos, const InferenceMode mode) {
+void Model::_forward_cpu(InferenceState& s, const int token, const int pos, const InferenceMode mode) const {
   const Config& c = *config;
 
   // copy the token embedding into `x`

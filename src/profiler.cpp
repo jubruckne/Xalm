@@ -1,4 +1,4 @@
-#include "debug.h"
+/*#include "profiler.h"
 #include "model.h"
 #include "types.h"
 
@@ -37,3 +37,4 @@ std::vector<T> BinaryDumper::load(const std::string& filename) {
 
 template std::vector<float> BinaryDumper::load(const std::string&);
 template std::vector<f16_t> BinaryDumper::load(const std::string&);
+*/

@@ -140,7 +140,6 @@ struct f16_t {
   }
 
 private:
-  // Fallback method: Convert float to half-precision manually
   static uint16_t float_to_half_fallback(float value) {
     uint32_t bits = *reinterpret_cast<uint32_t*>(&value);
     uint16_t sign = (bits >> 16) & 0x8000;
@@ -158,7 +157,6 @@ private:
     return sign | (exponent << 10) | mantissa;
   }
 
-  // Fallback method: Convert half-precision to float manually
   static float half_to_float_fallback(uint16_t half) {
     uint32_t sign = (half & 0x8000) << 16;
     uint32_t exponent = ((half >> 10) & 0x1F) + 112;
@@ -177,121 +175,29 @@ private:
   }
 };
 
-/*
-struct f8_t {
-  uint8_t data;
-
-  f8_t() : data(0) {}
-
-  explicit f8_t(const float value) {
-    *this = from(value);
-  }
-
-  static f8_t from(const f16_t value) {
-    return from(f16_t::to_float(value));
-  }
-
-  static f8_t from(const float value) {
-    f8_t result;
-
-    if (std::isnan(value)) { result.data = 0x7F; return result; } // NaN
-    if (value == 0.0f) { result.data = 0; return result; }       // Zero
-
-    // Extract sign
-    uint8_t sign = (value < 0) ? 0x80 : 0;
-    float abs_val = std::fabs(value);
-
-    // Handle special cases
-    if (abs_val > 240.0f) { result.data = sign | 0x7F; return result; } // Overflow
-    if (abs_val < 0.015625f) { result.data = sign; return result; }     // Underflow
-
-    // Compute exponent and mantissa
-    int exponent = 0;
-    float mantissa = std::frexp(abs_val, &exponent);
-
-    exponent += 7; // Bias of 7 for E4M3
-
-    // Clamp exponent
-    if (exponent <= 0) { result.data = sign; return result; }       // Underflow
-    if (exponent >= 15) { result.data = sign | 0x7F; return result; } // Overflow
-
-    // Extract mantissa (3 bits)
-    uint8_t mantissa_bits = static_cast<uint8_t>(mantissa * 8) & 0x7;
-
-    // Combine sign, exponent, and mantissa
-    result.data = sign | (exponent << 3) | mantissa_bits;
-    return result;
-  }
-
-  // Convert FP8_e4m3 to float
-  static float to_float(const f8_t& value) {
-    constexpr int FP8_E4M3_MANTISSA_BITS = 3;
-    constexpr int FP8_E4M3_EXPONENT_BIAS = 7;
-    constexpr int FP8_E4M3_MAX_EXPONENT = 15;
-
-    // Extract sign, exponent, and mantissa
-    const int sign = (value.data & 0x80) ? -1 : 1;
-    const int exponent = (value.data >> FP8_E4M3_MANTISSA_BITS) & 0xF;
-    const int mantissa = value.data & 0x7;
-
-    if (exponent == 0) {
-      // Subnormal number
-      return sign * std::ldexp(static_cast<float>(mantissa), -6);
-    }
-
-    if (exponent == FP8_E4M3_MAX_EXPONENT) {
-      // Infinity or NaN
-      return mantissa ? std::numeric_limits<float>::quiet_NaN()
-                      : sign * std::numeric_limits<float>::infinity();
-    }
-
-    return sign * std::ldexp(static_cast<float>(mantissa | 0x8), exponent - FP8_E4M3_EXPONENT_BIAS - FP8_E4M3_MANTISSA_BITS);
-  }
-
-  static float to_float(const f8_t& value) {
-    if (value.data == 0) return 0.0f;       // Zero
-    if (value.data == 0x7F) return NAN;     // NaN
-
-    // Extract sign, exponent, and mantissa
-    int sign = (value.data & 0x80) ? -1 : 1;
-    int exponent = ((value.data >> 3) & 0x0F) - 7; // Bias of 7
-    float mantissa = 1.0f + ((value.data & 0x07) / 8.0f);
-
-    // Reconstruct float
-    return sign * std::ldexp(mantissa, exponent);
-  }
-
-  bool operator==(const f8_t& other) const {
-    return data == other.data;
-  }
-
-  bool operator!=(const f8_t& other) const {
-    return !(*this == other);
-  }
-};
-*/
-
-template<int N> constexpr float EXP2() {
+template<int8_t N> consteval float EXP2() {
   if constexpr (N==0) return 1;
   if constexpr (N>0) return EXP2<N-1>()*2;
   if constexpr (N<0) return EXP2<N+1>()/2;
 }
 
-template<int N> constexpr int EXP_I2() {
+template<int8_t N> consteval int EXP_I2() requires (N >= 0) {
   if constexpr (N==0) return 1;
   if constexpr (N>0) return EXP_I2<N-1>()*2;
 }
 
-template<int E, int M> requires (E+M == 7)
+template<uint8_t E, uint8_t M> requires (M > 0 && E+M == 7)
 struct f8_t {
 private:
   uint8_t bits = 0;
 
   explicit f8_t(const uint8_t bits) : bits(bits) {}
 
-  static constexpr int E_BIAS=EXP2<E-1>()-1;
-  static constexpr float MAX() { return (2-EXP2<-M+1>())*EXP2<EXP_I2<E-1>()>(); }
-  static constexpr float MIN() { return EXP2<-M>()*EXP2<2-EXP_I2<E-1>()>(); }
+  static constexpr int E_BIAS = EXP2<E-1>()-1;
+  static constexpr float E_BIAS_MINUS_127 = EXP2<E_BIAS-127>();
+  static constexpr float E_127_MINUS_BIAS = EXP2<127-E_BIAS>();
+  static constexpr float max = (2-EXP2<-M+1>())*EXP2<EXP_I2<E-1>()>();
+  static constexpr float min = EXP2<-M>()*EXP2<2-EXP_I2<E-1>()>();
 public:
   static f8_t from(const float value) {
     union {
@@ -300,12 +206,12 @@ public:
     } in = {value};
     uint8_t bits = (in.bits >> 24) & 0x80;
     in.bits &= 0x7fffffff;
-    if (in.f >= MAX()) {
+    if (in.f >= max) {
       bits |= 0x7E;
-    } else if (in.f<MIN()) {
+    } else if (in.f < min) {
     } else {
-      in.f *= EXP2<E_BIAS-127>();
-      in.bits += 1<<(22-M);
+      in.f *= E_BIAS_MINUS_127;
+      in.bits += 1 << (22-M);
       bits |= (in.bits >> (23-M)) & 0x7F;
     }
 
@@ -322,7 +228,7 @@ public:
     uint32_t _bits = value.bits & 0x7F;
     _bits <<= (23-M);
     out.bits |= _bits;
-    out.f *= EXP2<127-E_BIAS>();
+    out.f *= E_127_MINUS_BIAS;
     return out.f;
   }
 };

@@ -135,7 +135,7 @@ const Tensor* get_tensor(const YALMData& yalm, const std::string& key, std::arra
 }
 
 Block::Block(
-  int layer_i,
+  const int layer_i,
   const std::shared_ptr<Config> config,
   const Tensor* rms_att_weight,
   const Tensor* rms_ffn_weight,

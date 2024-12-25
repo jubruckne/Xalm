@@ -70,17 +70,12 @@ Tensor Tensor::uniform(Type type, const std::array<int, 4>& shape, const float m
 }
 
 Tensor::Tensor(): type(Type::Unknown), size(0) {
-  printf("Tensor::Tensor()\n");
-  fflush(stdout);
   for (size_t i = 0; i < 4; i++) {
     shape[i] = 0;
   }
 }
 
 Tensor::~Tensor() {
-  printf("Tensor::~Tensor()\n");
-  fflush(stdout);
-
   if (mem_owned && data) {
     std::free(data);
   }
@@ -179,7 +174,7 @@ int YALMData::from_file(const std::string& filename) {
   }
   
   size = st.st_size;
-  data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
   if (data == MAP_FAILED) {
     close(fd);
     return -1;
@@ -189,7 +184,7 @@ int YALMData::from_file(const std::string& filename) {
   // increases readahead buffer size, resulting in faster cold loads
   posix_fadvise(fd, 0, size, POSIX_FADV_SEQUENTIAL);
 #elif defined(__APPLE__)
-    madvise(data, size, MADV_RANDOM | MADV_WILLNEED);
+  madvise(data, size, MADV_SEQUENTIAL); // | MADV_WILLNEED);
 #endif
 
   close(fd); // fd can be closed after mmap returns without invalidating the mapping
@@ -200,15 +195,15 @@ int YALMData::from_file(const std::string& filename) {
     return -1;
   }
 
-  uint64_t json_size = *(uint64_t*)data;
+  const uint64_t json_size = *static_cast<uint64_t*>(data);
   if (json_size == 0 || json_size > size - sizeof(uint64_t)) {
     munmap(data, size);
     return -1;
   }
 
-  char* json_ptr = (char*)data + sizeof(uint64_t);
-  void* bytes_ptr = (char*)data + sizeof(uint64_t) + json_size;
-  size_t bytes_size = size - sizeof(uint64_t) - json_size;
+  char* json_ptr = static_cast<char*>(data) + sizeof(uint64_t);
+  void* bytes_ptr = static_cast<char*>(data) + sizeof(uint64_t) + json_size;
+  const size_t bytes_size = size - sizeof(uint64_t) - json_size;
 
   json_ptr[json_size - 1] = 0; // null-terminate the JSON string
   json header = json::parse(json_ptr);

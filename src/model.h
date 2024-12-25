@@ -20,17 +20,7 @@ enum class LayerNormType {
 
 enum class Device {
   CPU,
-  // CUDA,
 };
-
-/*
-extern "C" void* upload_cuda(void* host, size_t size);
-extern "C" void* download_cuda(void* device, size_t size, std::string debug);
-extern "C" void register_cuda_host(void* host, size_t size);
-extern "C" void free_cuda(void* device);
-extern "C" void unregister_cuda_host(void* host);
-extern "C" void set_cuda_device(int device);
-*/
 
 struct Config {
   int dim;                  // transformer input & output dimension
@@ -100,14 +90,9 @@ private:
   float* _k = nullptr;         // (n_kv_heads * head_dim,) - key vectors for latest timestamp
   float* _v = nullptr;         // (n_kv_heads * head_dim,) - value vectors for latest timestamp
   float* _att = nullptr;       // (n_heads, seq_len) - buffer for attention scores
-  
-  // LM head
-  // NOTE: this always lives on the host (CPU), but must be registered 
-  // with CUDA to be used on the device.
   float* _logits = nullptr;    // (vocab_size,) - final output logits
 };
 
-/* Transformer Block */
 struct Block {
   Block(
     int layer_i,
@@ -123,18 +108,18 @@ struct Block {
     const Tensor* w3
   );
   ~Block();
-  int layer_i() const { return _layer_i; }
-  const Tensor* rms_att_weight() const { return _rms_att_weight; }
-  const Tensor* rms_ffn_weight() const { return _rms_ffn_weight; }
-  const Tensor* wq() const { return (_wq); }
-  const Tensor* wk() const { return (_wk); }
-  const Tensor* wv() const { return (_wv); }
-  const Tensor* wo() const { return (_wo); }
-  const Tensor* w1() const { return (_w1); }
-  const Tensor* w2() const { return (_w2); }
-  const Tensor* w3() const { return (_w3); }
-  f16_t* key_cache() const { return _key_cache; }
-  f16_t* value_cache() const { return _value_cache; }
+  [[nodiscard]] int layer_i() const { return _layer_i; }
+  [[nodiscard]] const Tensor* rms_att_weight() const { return _rms_att_weight; }
+  [[nodiscard]] const Tensor* rms_ffn_weight() const { return _rms_ffn_weight; }
+  [[nodiscard]] const Tensor* wq() const { return (_wq); }
+  [[nodiscard]] const Tensor* wk() const { return (_wk); }
+  [[nodiscard]] const Tensor* wv() const { return (_wv); }
+  [[nodiscard]] const Tensor* wo() const { return (_wo); }
+  [[nodiscard]] const Tensor* w1() const { return (_w1); }
+  [[nodiscard]] const Tensor* w2() const { return (_w2); }
+  [[nodiscard]] const Tensor* w3() const { return (_w3); }
+  [[nodiscard]] f16_t* key_cache() const { return _key_cache; }
+  [[nodiscard]] f16_t* value_cache() const { return _value_cache; }
 
 
   // Compute forward pass for this block and update the inference state accordingly.
@@ -160,15 +145,6 @@ private:
     int kv_len          // number of tokens in the kv cache that we will attend over
   ) const;
 
-  /*template <typename T>
-  void _block_cuda(
-    InferenceState& s,  // inference state
-    int pos,            // index of the current token in the sequence
-    int kv_sink,        // number of sink tokens currently in the KV cache
-    int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
-    int kv_len          // number of tokens in the kv cache that we will attend over
-  ) const;*/
-
   int _layer_i = 0;
 
   std::shared_ptr<Config> _config;
@@ -178,7 +154,7 @@ private:
   const Tensor *_rms_att_weight = nullptr; // (dim) rmsnorm weights
   const Tensor *_rms_ffn_weight = nullptr; // (dim)
 
-  // weights for self-attention matmuls
+  // weights for self-attention
   const Tensor *_wq = nullptr; // (n_heads * head_dim, dim)
   const Tensor *_wk = nullptr; // (n_kv_heads * head_dim, dim)
   const Tensor *_wv = nullptr; // (n_kv_heads * head_dim, dim)
@@ -211,13 +187,13 @@ struct Model {
   // classifier weights for the logits, on the last layer
   const Tensor *wcls = nullptr; // (vocab_size, dim)
 
-  Model(YALMData& yalm, int context = 0);
+  explicit Model(YALMData& yalm, int context = 0);
   
   void forward(InferenceState& s, int token, int pos, InferenceMode mode = InferenceMode::OUTPUT_LOGITS);
   void cuda();
 
 private:
-  void _forward_cpu(InferenceState& s, int token, int pos, InferenceMode mode);
+  void _forward_cpu(InferenceState& s, int token, int pos, InferenceMode mode) const;
   void _forward_cuda(InferenceState& s, int token, int pos, InferenceMode mode);
   void _copy_embedding(const InferenceState& s, int token) const;
 
@@ -276,25 +252,5 @@ void mha_cuda(
   int head_dim, int kv_len, int max_seq_len, int n_heads, int n_kv_heads
 );
 
-void matmul(float* xout, const float* x, const Tensor* w, const int n, const int d);
+void matmul(float* xout, const float* x, const Tensor* w, int n, int d);
 void matmul(const Tensor& xout, const Tensor& a, const Tensor& b);
-
-void matmul_cpu(float* xout, float* x, float* w, int n, int d);
-void matmul_cpu(float* xout, float* x, f16_t* w, int n, int d);
-template <typename T>
-void matmul_cuda(float* xout, float* x, T* w, int n, int d);
-
-void ffn_cpu(
-  float* xout, float* x, 
-  float* w1, float* w2, float* w3, 
-  int hidden_dim, int dim,
-  ActivationType act
-);
-template <typename T>
-void ffn_cuda(
-  float* xout, float* x, 
-  T* w1, T* w2, T* w3, 
-  int hidden_dim, int dim,
-  ActivationType act
-);
-////////////////////////////////////////
