@@ -16,7 +16,9 @@ public:
   Profiler(const std::source_location& location = std::source_location::current(),
              const std::string& params = "")
       : functionName(location.function_name()), parameters(params),
-        startTime(std::chrono::high_resolution_clock::now()) {}
+        startTime(std::chrono::high_resolution_clock::now()) {
+    std::printf("[%s]\n", functionName.c_str());
+  }
 
   ~Profiler() {
     const auto endTime = std::chrono::high_resolution_clock::now();
