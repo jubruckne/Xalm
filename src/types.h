@@ -130,7 +130,7 @@ struct f16_t {
   // Convert to float from half-precision
   static float to_float(f16_t value) {
 #if defined(__AVX2__) && defined(__F16C__)
-    return _cvtsh_ss(data); // AVX2 F16C path
+    return _cvtsh_ss(value.data); // AVX2 F16C path
 #elif defined(__ARM_NEON) || defined(__aarch64__)
     __fp16 h = *reinterpret_cast<const __fp16*>(&value); // ARM path
     return static_cast<float>(h);
