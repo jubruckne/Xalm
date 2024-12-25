@@ -256,6 +256,7 @@ void Block::_block_cpu(
   // attention pre-norm
   switch (c.norm_type) {
     case LayerNormType::RMSNorm: {
+      assert(rms_att_weight()->type == Type::F32);
       rmsnorm(s.xb(), s.x(), static_cast<const float *>(rms_att_weight()->data), c.dim, c.norm_eps);
       break;
     }
@@ -329,6 +330,7 @@ void Block::_block_cpu(
   // ffn pre-norm
   switch (c.norm_type) {
     case LayerNormType::RMSNorm: {
+      assert(rms_ffn_weight()->type == Type::F32);
       rmsnorm(s.xb(), s.x(), static_cast<const float *>(rms_ffn_weight()->data), c.dim, c.norm_eps);
       break;
     }
@@ -479,6 +481,7 @@ void Model::_forward_cpu(InferenceState& s, const int token, const int pos, cons
   // final layer norm
   switch (c.norm_type) {
     case LayerNormType::RMSNorm: {
+      assert(rms_final_weight()->type == Type::F32);
       rmsnorm(s.x(), s.x(), static_cast<const float *>(rms_final_weight->data), c.dim, c.norm_eps);
       break;
     }
