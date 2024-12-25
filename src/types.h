@@ -189,7 +189,6 @@ private:
   static constexpr float max = (2-EXP2<-M+1>())*EXP2<EXP_I2<E-1>()>();
   static constexpr float min = EXP2<-M>()*EXP2<2-EXP_I2<E-1>()>();
 public:
-#pragma omp declare simd
   static f8_t from(const float value) {
     union {
       float f;
@@ -209,7 +208,6 @@ public:
     return f8_t(bits);
   }
 
-#pragma omp declare simd
   static float to_float(const f8_t value) {
     union {
       float f;

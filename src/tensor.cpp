@@ -177,6 +177,8 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
     printf("bad size: (%zu * %zu = %zu), expected %zu", numel, dsize, numel * dsize, this->size);
     return -1;
   }
+
+  std::printf("[%s] type=%s", name.c_str(), dtype_str.c_str());
   return 0;
 }
 
