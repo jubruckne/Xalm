@@ -145,10 +145,29 @@ void run_completion(
   ) << std::endl;
 }
 
-void run_test() {
+void run_test(const std::string& checkpoint_path) {
 	printf("test start\n");
 
-	Tensor a1 = Tensor::uniform(Type::F32, {4096*4, 4096}, 0, 1, "a");
+  YALMData model1, model2;
+
+  //model2.from_file("../models/mistral.fp8.xalm");
+  model1.from_file("../models/mistral.xalm");
+
+
+
+  std::print("\n*****\n");
+  std::print("{}", model1.format());
+
+  return;
+
+
+  Tensor ttt1 = model1.tensors.at("model.layers.9.mlp.w3.weight");
+  std::print("\n{}", ttt1.format(16, 0, 8, 8));
+
+  // Tensor ttt2 = model2.tensors.at("model.layers.0.attn.norm.weight");
+  //std::printf("%s", ttt2.to_string(16).c_str());
+
+  Tensor a1 = Tensor::uniform(Type::F32, {4096*4, 4096}, 0, 1, "a");
 	Tensor b0 = Tensor::uniform(Type::F32, {4096*4, 4096}, 0, 1, "b0");
 	Tensor b1 = Tensor::uniform(Type::F16, {4096*4, 4096}, 0, 1, "b1");
 	Tensor b2 = Tensor::uniform(Type::F8, {4096*4, 4096}, 0, 1, "b2");
@@ -487,7 +506,7 @@ int main(int argc, char* argv[]) {
   } else if (mode == "perplexity") {
     run_perplexity(checkpoint_path, device, prompt, context);
   } else if(mode == "test") {
-	  run_test();
+	  run_test(checkpoint_path);
     Profiler::report();
   }
 

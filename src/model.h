@@ -118,8 +118,8 @@ struct Block {
   [[nodiscard]] const Tensor* w1() const { return (_w1); }
   [[nodiscard]] const Tensor* w2() const { return (_w2); }
   [[nodiscard]] const Tensor* w3() const { return (_w3); }
-  [[nodiscard]] f16_t* key_cache() const { return _key_cache; }
-  [[nodiscard]] f16_t* value_cache() const { return _value_cache; }
+  [[nodiscard]] float16_t* key_cache() const { return _key_cache; }
+  [[nodiscard]] float16_t* value_cache() const { return _value_cache; }
 
 
   // Compute forward pass for this block and update the inference state accordingly.
@@ -166,8 +166,8 @@ private:
   const Tensor *_w3 = nullptr; // (n_experts?, hidden_dim, dim) - GLU weights
 
   // kv cache
-  f16_t* _key_cache = nullptr;   // (seq_len, n_kv_heads * head_dim)
-  f16_t* _value_cache = nullptr; // (seq_len, n_kv_heads * head_dim)
+  float16_t* _key_cache = nullptr;   // (seq_len, n_kv_heads * head_dim)
+  float16_t* _value_cache = nullptr; // (seq_len, n_kv_heads * head_dim)
 };
 
 enum class InferenceMode {
@@ -190,7 +190,6 @@ struct Model {
   explicit Model(YALMData& yalm, int context = 0);
   
   void forward(InferenceState& s, int token, int pos, InferenceMode mode = InferenceMode::OUTPUT_LOGITS);
-  void cuda();
 
 private:
   void _forward_cpu(InferenceState& s, int token, int pos, InferenceMode mode) const;
@@ -228,8 +227,8 @@ void attn(
   float* xout,    // (dim,) - output vector
   float* atth,    // (kv_len,) - scratch space to hold attention scores of the sequence
   float* qh,      // (head_dim,) - query vector for this head
-  f16_t* kh,      // (kv_len, n_kv_heads, head_dim) - buffer containing key vectors of the sequence for all KV heads
-  f16_t* vh,      // (kv_len, n_kv_heads, head_dim) - buffer containing value vectors of the sequence for all KV heads
+  float16_t* kh,      // (kv_len, n_kv_heads, head_dim) - buffer containing key vectors of the sequence for all KV heads
+  float16_t* vh,      // (kv_len, n_kv_heads, head_dim) - buffer containing value vectors of the sequence for all KV heads
   int head_dim,   // size of the "key-space"
   int n_kv_heads, // number of kv heads, can be < n_heads (1 is MultiQueryAttention, >1 is GroupedQueryAttention)
   int kv_len      // number of tokens of the sequence we will attend over
@@ -238,16 +237,16 @@ void attn(
 void mha_cpu(
   float* xout,  // (n_heads, head_dim)
   float* att,   // (n_heads, max_seq_len)
-  f16_t* kb,    // (max_seq_len, n_kv_heads, head_dim)
-  f16_t* vb,    // (max_seq_len, n_kv_heads, head_dim)
+  float16_t* kb,    // (max_seq_len, n_kv_heads, head_dim)
+  float16_t* vb,    // (max_seq_len, n_kv_heads, head_dim)
   float* q,     // (n_heads, head_dim)
   int head_dim, int kv_len, int max_seq_len, int n_heads, int n_kv_heads
 );
 void mha_cuda(
   float* xout,  // (n_heads, head_dim)
   float* att,   // (n_heads, max_seq_len)
-  f16_t* kb,    // (max_seq_len, n_kv_heads, head_dim)
-  f16_t* vb,    // (max_seq_len, n_kv_heads, head_dim)
+  float16_t* kb,    // (max_seq_len, n_kv_heads, head_dim)
+  float16_t* vb,    // (max_seq_len, n_kv_heads, head_dim)
   float* q,     // (n_heads, head_dim)
   int head_dim, int kv_len, int max_seq_len, int n_heads, int n_kv_heads
 );

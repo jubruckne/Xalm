@@ -6,26 +6,28 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <unordered_set>
+#include "table.h"
 
 #include "types.h"
 
-size_t Tensor::calculate_size(Type type, const std::array<int, 4>& shape) {
+size_t Tensor::calculate_size(Type type, const std::vector<int> &shape) {
   size_t num_elements = 1;
   for (const int dim : shape) {
     if (dim == 0) break;
     num_elements *= dim;
   }
-  return num_elements * type.bit_size() / 8;
+  return num_elements * (type.bit_size / 8);
 }
 
-Tensor Tensor::view(void* data, size_t size, Type type, const std::array<int, 4>& shape, const std::string& name) {
+Tensor Tensor::view(void* data, size_t size, Type type, const std::vector<int> &shape, const std::string& name) {
   if (const size_t expected_size = calculate_size(type, shape); size != expected_size) {
     throw std::invalid_argument("External data size does not match expected size for the given shape and type.");
   }
   return Tensor(name, type, shape, data, size, false);
 }
 
-Tensor Tensor::zeroes(Type type, const std::array<int, 4> &shape, const std::string &name) {
+Tensor Tensor::zeroes(Type type, const std::vector<int> &shape, const std::string &name) {
   const size_t size = calculate_size(type, shape);
   void* ptr = std::aligned_alloc(16, size);
   if (!ptr) {
@@ -35,7 +37,7 @@ Tensor Tensor::zeroes(Type type, const std::array<int, 4> &shape, const std::str
   return Tensor(name, type, shape, ptr, size, true);
 }
 
-Tensor Tensor::uniform(Type type, const std::array<int, 4>& shape, const float min, const float max, const std::string& name) {
+Tensor Tensor::uniform(Type type, const std::vector<int> &shape, const float min, const float max, const std::string& name) {
   auto t = Tensor::zeroes(type, shape, name);
 
   std::default_random_engine generator(42);
@@ -50,9 +52,9 @@ Tensor Tensor::uniform(Type type, const std::array<int, 4>& shape, const float m
       break;
     }
     case Type::F16: {
-      auto* ptr = static_cast<f16_t*>(t.data);
+      auto* ptr = static_cast<float16_t*>(t.data);
       for (size_t i = 0; i < t.linear_length; ++i) {
-        ptr[i] = f16_t::from_float(distribution(generator));
+        ptr[i] = distribution(generator);
       }
       break;
     }
@@ -69,10 +71,8 @@ Tensor Tensor::uniform(Type type, const std::array<int, 4>& shape, const float m
   return t;
 }
 
-Tensor::Tensor(): type(Type::Unknown), size(0) {
-  for (size_t i = 0; i < 4; i++) {
-    shape[i] = 0;
-  }
+Tensor::Tensor(): rank(0), type(Type::Unknown), shape(), size(0) {
+
 }
 
 Tensor::~Tensor() {
@@ -81,11 +81,14 @@ Tensor::~Tensor() {
   }
 }
 
-Tensor::Tensor(std::string name, const Type type, const std::array<int, 4>& shape, void* data, const size_t size, const bool mem_owned)
-    : name(std::move(name)), type(type), size(size), mem_owned(mem_owned) {
+Tensor::Tensor(std::string name, const Type type, const std::vector<int> &shape, void* data, const size_t size, const bool mem_owned)
+  : rank(2), name(std::move(name)), type(type), size(size), mem_owned(mem_owned) {
   if (shape.size() > 4) {
     throw std::invalid_argument("Shape cannot have more than 4 dimensions");
   }
+
+  this->rank = shape.size();
+  this->shape.resize(rank);
 
   if (const size_t expected_size = calculate_size(type, shape); size != expected_size) {
     throw std::invalid_argument("External data size does not match expected size for the given shape and type.");
@@ -105,7 +108,7 @@ Tensor::Tensor(std::string name, const Type type, const std::array<int, 4>& shap
     this->shape[i] = 1;
   }
 
-  const size_t dsize = type.bit_size() / 8;
+  const size_t dsize = type.bit_size / 8;
   this->linear_length = numel;
   this->size = numel * dsize;
   this->data = data;
@@ -123,32 +126,37 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
     this->type = Type::U8;
   } else if (dtype_str == "F8_E4M3") {
     this->type = Type::F8;
-  } else {
-    printf("bad dtype %s", dtype_str.c_str());
-    return -1;
+  } else {;
+    throw std::invalid_argument(std::format("bad dtype {}", dtype_str));
   }
-  const size_t dsize = this->type.bit_size() / 8;
+  const size_t dsize = this->type.bit_size / 8;
 
   size_t numel = 1;
-  if (val.at("shape").size() > 4) {
-    std::cerr << "shape exceeds 4 dimensions" << std::endl;
+  rank = val.at("shape").size();
+  if (rank > 4) {
+    std::print("shape exceeds 4 dimensions");
+    throw std::bad_alloc();
+  } else {
+    shape.resize(rank);
   }
-  for (size_t i = 0; i < val.at("shape").size() && i < 4; i++) {
+
+  for (size_t i = 0; i < rank && i < 4; i++) {
     if (val.at("shape")[i].get<int>() != val.at("shape")[i]) {
-      std::cerr << "bad shape" << std::endl;
-      return -1;
+      std::print("bad shape");
+      throw std::bad_alloc();
     }
     shape[i] = val.at("shape")[i].get<int>();
     numel *= shape[i];
   }
   if (val.at("data_offsets").size() != 2) {
-    return -1;
+    std::printf("bad offsets");
+    throw std::bad_alloc();
   }
   const auto offset_start = static_cast<size_t>(val.at("data_offsets")[0]);
   const auto offset_end = static_cast<size_t>(val.at("data_offsets")[1]);
   if (offset_start < 0 || offset_end <= offset_start || offset_end > bytes_size) {
-    std::cerr << "bad offsets" << std::endl;
-    return -1;
+    std::printf("bad offsets");
+    throw std::bad_alloc();
   }
   this->data = static_cast<char*>(bytes_ptr) + offset_start;
 
@@ -160,8 +168,10 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   constexpr int need_align = 1;
   #endif
 
+  std::printf("[%s] type=%s", name.c_str(), dtype_str.c_str());
+
   if (reinterpret_cast<uintptr_t>(this->data) % need_align != 0) {
-    std::printf("%s: data alignment is not a multiple of %i. Allocating aligned memory.\n", name.c_str(), need_align);
+    std::printf(" alignment to %i", need_align);
 
     void* aligned_data = std::aligned_alloc(need_align, size);
     if (!aligned_data) {
@@ -174,15 +184,33 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   this->size = offset_end - offset_start;
   // validate the shape matches the size
   if (numel * dsize != this->size) {
-    printf("bad size: (%zu * %zu = %zu), expected %zu", numel, dsize, numel * dsize, this->size);
-    return -1;
+    throw std::invalid_argument(std::format("bad size! {}: {} * {} = {}, expected {}", dtype_str, numel, dsize, numel * dsize, this->size));
   }
 
-  std::printf("[%s] type=%s", name.c_str(), dtype_str.c_str());
+  std::printf(" loaded.\n");
+
   return 0;
 }
 
+[[nodiscard]] std::string YALMData::format() const {
+  auto tbl = table::make(
+      column<int>{"#", -1, alignment::left, "{}", false},
+      column<std::string>{"name", -1, alignment::left, "{}", true},
+      column<std::string>{"type", -1, alignment::center, "{}", true},
+      column<std::array<int, 2>>{"shape", -1, alignment::right, "{h}", true},
+      column<size_t>{"size", -1, alignment::right, "{h}"}
+  );
+
+  int row_number = 0;
+  for (const auto& [key, tensor]: tensors) {
+    tbl.add(row_number++, key, std::string(tensor.type.name()), tensor.shape, tensor.size);;
+  }
+
+  return tbl.format(filename, 6);
+}
+
 int YALMData::from_file(const std::string& filename) {
+  this->filename = filename;
   std::cout << "loading data from file: " << filename << std::endl;
   int fd = open(filename.c_str(), O_RDONLY);
   if (fd == -1) {
@@ -196,7 +224,7 @@ int YALMData::from_file(const std::string& filename) {
   }
   
   size = st.st_size;
-  data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+  data = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
   if (data == MAP_FAILED) {
     close(fd);
     return -1;
@@ -204,9 +232,9 @@ int YALMData::from_file(const std::string& filename) {
 
 #ifdef __linux__
   // increases readahead buffer size, resulting in faster cold loads
-  posix_fadvise(fd, 0, size, POSIX_FADV_SEQUENTIAL);
+  posix_fadvise(fd, 0, size, POSIX_MADV_WILLNEED); // POSIX_FADV_SEQUENTIAL);
 #elif defined(__APPLE__)
-  madvise(data, size, MADV_SEQUENTIAL); // | MADV_WILLNEED);
+  madvise(data, size, MADV_WILLNEED); // | MADV_SEQUENTIAL MADV_WILLNEED);
 #endif
 
   close(fd); // fd can be closed after mmap returns without invalidating the mapping
@@ -223,12 +251,11 @@ int YALMData::from_file(const std::string& filename) {
     return -1;
   }
 
-  char* json_ptr = static_cast<char*>(data) + sizeof(uint64_t);
   void* bytes_ptr = static_cast<char*>(data) + sizeof(uint64_t) + json_size;
   const size_t bytes_size = size - sizeof(uint64_t) - json_size;
 
-  json_ptr[json_size - 1] = 0; // null-terminate the JSON string
-  json header = json::parse(json_ptr);
+  const std::string json_string(static_cast<char*>(data) + sizeof(uint64_t), json_size);
+  const json header = json::parse(json_string);
 
   for (auto& [key, val] : header.items()) {
     if (key == "__metadata__") {
@@ -246,6 +273,186 @@ int YALMData::from_file(const std::string& filename) {
   }
 
   return 0;
+}
+
+std::string Tensor::format(size_t show_rows, size_t show_columns, int groups_row, int groups_col) const {
+  if (!data) {
+    return "Error: Tensor data is null.";
+  }
+
+  if (rank == 0) {
+    throw std::invalid_argument("rank 0!");
+  }
+
+  std::string shape_str = "[";
+  for (size_t i = 0; i < rank; ++i) {
+    shape_str += std::to_string(shape[i]);
+    if (i + 1 < rank) {
+      shape_str += ", ";
+    }
+  }
+  shape_str += "]";
+
+  return table::make(
+      column<std::array<double, 3>>{"Coordinates"},
+      column<int>{"ID"}
+  ).format();
+
+  /*
+  auto extra_columns = {"min", "max", "mean", "std", "unique"};
+
+  int column_width = 9;
+  std::string output = std::format("{}{}: {}\n", name, shape_str, type.name());
+
+  size_t num_columns = rank == 1 ? shape[0] : shape[1];
+  show_columns = std::min(show_columns, num_columns);
+
+  std::string sep = std::string(column_width * (show_columns + extra_columns.size()) + 6 + (show_columns == 0 ? 0 : 3), '-') + "\n";
+
+  output += sep;
+  output += std::format("{:<{}}", "row", 6);
+
+  struct column_t {
+    std::string name;
+    size_t i_begin = 0;
+    size_t i_end = 0;
+    bool show = true;
+  };
+
+  std::vector<column_t> col_def;
+
+  for (size_t col = 0; col < num_columns; ++col) {
+    column_t column;
+    if (groups_col == 1) {
+      column.i_begin = col;
+      column.i_end = col;
+      column.name = std::format("{:>{}}", std::format("col {}", col), column_width);
+      column.show = col < show_columns;
+    } else {
+      column.i_begin = col * groups_col;
+      column.i_end = col * (groups_col + 1) - 1;
+      column.name = std::format("{:>{}}", std::format("col {}-{}", column.i_begin, column.i_end), column_width);
+      column.show = col < show_columns;
+
+      if (column.show && extra_columns.size() > 0) {
+        // add stats columns
+        for (std::string c: extra_columns) {
+          col_def.push_back(column_t{c, 0, 0, true});
+          output += std::format("{:>{}}", c, column_width);
+        }
+      }
+    }
+    column.show = col < show_columns;
+
+    if (column.show) {
+      output += std::format("{:>{}}", std::format("col {}", col), column_width);
+    } else if (col > 0) {
+      output += std::format("{:>{}}", "...", 3);
+    }
+
+    col_def.push_back(column);
+  }
+
+  for (auto c: extra_columns) {
+    output += std::format("{:>{}}", c, column_width);
+  }
+
+  output += "\n" + sep;
+
+  size_t num_rows = rank == 1 ? 1 : shape[0];
+  show_rows = std::min(show_rows, num_rows);
+
+  struct stats_t {
+    float sum = 0;
+    float min = std::numeric_limits<float>::max();
+    float max = std::numeric_limits<float>::min();
+    float sum_abs = 0;
+    std::unordered_set<float> unique_values;
+  };
+
+  stats_t all_stats{0,std::numeric_limits<float>::max(),std::numeric_limits<float>::min(), 0};
+
+  for (size_t row = 0; row < show_rows; ++row) {
+    output += std::format("{:<{}}", row, 6);
+
+    for (size_t i = 0; i < num_columns; i += groups_col) {
+      stats_t col_stats{0,std::numeric_limits<float>::max(),std::numeric_limits<float>::min(), 0};
+
+      for (int gc = 0; gc < groups_col; ++gc) {
+        auto val = type.get_float(data, num_columns * row + i);
+
+        for (auto st: {&all_stats, &col_stats}) {
+          st->sum += val;
+          st->sum_abs += std::abs(val);
+          st->min = std::min(st->min, val);
+          st->max = std::max(st->max, val);
+          st->unique_values.insert(val);
+        }
+
+        if (i < show_columns) {
+          output += std::format("{:>{}.4f}", val*128.0f, column_width);
+        }
+      }
+    }
+
+    if (show_columns > 0) {
+      output += std::format("{:>{}}", " ", 3);
+    }
+
+    for (std::string c: extra_columns) {
+      if (c == "mean") {
+        output += std::format("{:>{}.4f}", col_stats.sum / static_cast<float>(num_columns), column_width);
+      } else if (c == "std") {
+        output += std::format("{:>{}.4f}", static_cast<float>(666), column_width);
+      } else if (c == "min") {
+        output += std::format("{:>{}.4f}", col_stats.min, column_width);
+      } else if (c == "max") {
+        output += std::format("{:>{}.4f}", col_stats.max, column_width);
+      } else if (c == "sum") {
+        output += std::format("{:>{}.4f}", col_stats.sum, column_width);
+      } else if (c == "sum_abs") {
+        output += std::format("{:>{}.4f}", col_stats.sum_abs, column_width);
+      } else if (c == "unique") {
+        output += std::format("{:>{}}", col_stats.unique_values.size(), column_width);
+      } else {
+        throw std::invalid_argument(std::format("unknown column {}", c));
+      }
+    }
+
+    output += "\n";
+  }
+
+  output += sep;
+  { // final header
+    output += std::format("{:<{}}", num_rows, 6);
+    if (show_columns > 0) {
+      output += std::format("{:>{}}", " ", 3);
+    }
+    for (std::string c: extra_columns) {
+      if (c == "mean") {
+        output += std::format("{:>{}.4f}", all_stats.sum / static_cast<float>(num_columns), column_width);
+      } else if (c == "std") {
+        output += std::format("{:>{}.4f}", static_cast<float>(666), column_width);
+      } else if (c == "min") {
+        output += std::format("{:>{}.4f}", all_stats.min, column_width);
+      } else if (c == "max") {
+        output += std::format("{:>{}.4f}", all_stats.max, column_width);
+      } else if (c == "sum") {
+        output += std::format("{:>{}.4f}", all_stats.sum, column_width);
+      } else if (c == "sum_abs") {
+        output += std::format("{:>{}.4f}", all_stats.sum_abs, column_width);
+      } else if (c == "unique") {
+        output += std::format("{:>{}}", all_stats.unique_values.size(), column_width);
+      } else {
+        throw std::invalid_argument(std::format("unknown column {}", c));
+      }
+    }
+
+    output += "\n\n";
+  }
+
+  return output;
+*/
 }
 
 /*

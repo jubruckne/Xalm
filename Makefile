@@ -1,7 +1,7 @@
 # Compiler and tools
 CC := clang
 CXX := clang++
-MAKEFLAGS += -r -j
+MAKEFLAGS += -r -j 8
 
 UNAME := $(shell uname)
 
@@ -11,23 +11,19 @@ VENDOR_DIR := vendor
 ASM_DIR := $(BUILD)/asm
 BIN_DIR := .
 
-# Detect OS-specific settings
-ifeq ($(UNAME), Darwin)
-    # macOS settings
-    OPENMP_FLAGS := -Xpreprocessor -fopenmp
-    OPENMP_LIB := -lomp
-    LIBOMP_INCLUDE := /opt/homebrew/opt/libomp/include
-    LIBOMP_LIB := /opt/homebrew/opt/libomp/lib
-    LDFLAGS := -lm $(OPENMP_LIB) -L$(LIBOMP_LIB)
-else
-    # Assume Linux (Ubuntu) settings
+CFLAGS := -g -Wall -Wpointer-arith -march=native -O3 -Werror -I$(VENDOR_DIR) -std=c++23 -fcolor-diagnostics
+LDFLAGS := -lm
+
+ifeq ($(UNAME), Darwin)	# MAC OS
+    CFLAGS += -mcpu=native -Xpreprocessor -fopenmp -I /opt/homebrew/opt/libomp/include
+    LDFLAGS += -lomp -L /opt/homebrew/opt/libomp/lib
+else # LINUX
     OPENMP_FLAGS := -fopenmp
     OPENMP_LIB := -fopenmp
     LIBOMP_INCLUDE := /usr/include
     LIBOMP_LIB := /usr/lib/x86_64-linux-gnu
     LDFLAGS := -lm $(OPENMP_LIB) -L$(LIBOMP_LIB)  #
 endif
-CFLAGS := -g -Wall -Wpointer-arith -march=native -O3 -Werror -I$(VENDOR_DIR) -std=c++23 $(OPENMP_FLAGS) -I$(LIBOMP_INCLUDE)
 
 # compile .c, .cpp, .cu files
 SOURCES=$(filter-out src/test.cpp,$(wildcard src/*.c))

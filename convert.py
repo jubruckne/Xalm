@@ -9,6 +9,7 @@ import argparse
 import os
 import json
 import sys
+from enum import Enum
 from urllib.parse import urljoin
 
 import requests
@@ -20,12 +21,39 @@ from tqdm import tqdm
 SUPPORTED_ARCHITECTURES = [
     "MistralForCausalLM"
 ]
-SUPPORTED_DTYPES = [
-    "f32",
-    "f16",
-    "f8",
-    "f8.e4m3"
-]
+
+class TensorType(Enum):
+    f32 = 1
+    f16 = 2
+    bf16 = 3
+    f8_e4m3 = 4
+    f8_e5m2 = 5
+    f4_e2m1 = 6
+
+    @staticmethod
+    def get_supported_types():
+        return [name for name in TensorType.__members__]
+
+    def convert_to(self, t: torch.tensor) -> torch.tensor:
+        if self == TensorType.f32:
+            converted_tensor = t.to(torch.float32)
+        elif self == TensorType.f16:
+            converted_tensor = t.to(torch.float16)
+        elif self == TensorType.bf16:
+            converted_tensor = t.to(torch.bfloat16)
+        elif self == TensorType.f8_e4m3:
+            torchtype = getattr(torch, "float8_e4m3fn")
+            converted_tensor = t.to(torchtype)
+        elif self == TensorType.f8_e5m2:
+            torchtype = getattr(torch, "float8_e5m2")
+            converted_tensor = t.to(torchtype)
+        elif self == "f4.e2m1":
+            converted_tensor = quantize_to_f4_e2m1(t)
+        else:
+            raise ValueError(f"Unsupported target dtype: {self}")
+
+        return converted_tensor
+
 
 class Metadata:
     def __init__(self, config, type_str):
@@ -33,8 +61,8 @@ class Metadata:
         if arch not in SUPPORTED_ARCHITECTURES:
             raise Exception(f"Architecture {arch} is not supported, must be one of {SUPPORTED_ARCHITECTURES}")
         self.arch = arch
-        if type_str not in SUPPORTED_DTYPES:
-            raise Exception(f"Data type {type_str} is not supported, must be one of {SUPPORTED_DTYPES}")
+        if type_str not in TensorType.get_supported_types():
+            raise Exception(f"Data type {type_str} is not supported, must be one of {TensorType.get_supported_types()}")
         self.type = type_str
         if arch == "MistralForCausalLM":
             self.dim = config["hidden_size"]
@@ -99,12 +127,55 @@ def load_tokens(tokenizer_path, vocab_size):
 
     return tokens
 
-def load_weights(model_files, dtype_str, metadata, tie_word_embeddings):
+def quantize_to_f4_e2m1(tensor):
+    if tensor.dtype != torch.float32:
+        raise ValueError("Input tensor must be of dtype float32")
+
+    # Extract sign
+    sign_bit = (tensor < 0).to(torch.int32)
+    abs_tensor = torch.abs(tensor)
+
+    # Compute exponent (bias = 1) and clamp range
+    exponent = torch.floor(torch.log2(abs_tensor)).clamp(-1, 2)
+    exponent_bits = (exponent + 1).to(torch.int32)
+
+    # Normalize and compute mantissa
+    normalized = abs_tensor / (2 ** exponent)
+    mantissa = ((normalized - 1.0) * 2).clamp(0, 1).to(torch.int32)
+
+    # Combine to form FP4
+    fp4 = (sign_bit << 3) | (exponent_bits << 1) | mantissa
+
+    # Pack FP4 into int8 (two FP4 values per int8)
+    packed = (fp4[::2] << 4) | fp4[1::2]
+    return packed.to(torch.int8)
+
+def dequantize_from_f4_e2m1(packed_tensor):
+    # Unpack int8 into two FP4 values each
+    fp4_high = (packed_tensor >> 4) & 0x0F
+    fp4_low = packed_tensor & 0x0F
+
+    # Concatenate unpacked FP4 values
+    fp4 = torch.cat([fp4_high, fp4_low], dim=0)
+
+    # Extract components
+    sign_bit = (fp4 >> 3) & 0b1
+    exponent_bits = (fp4 >> 1) & 0b11
+    mantissa_bits = fp4 & 0b1
+
+    # Decode values
+    sign = (-1) ** sign_bit
+    exponent = exponent_bits - 1  # Remove bias
+    mantissa = mantissa_bits / 2
+    value = sign * (1 + mantissa) * (2 ** exponent)
+    return value.to(torch.float32)
+
+
+def load_weights(model_files, target_type: TensorType, metadata, tie_word_embeddings):
     """
     Load all weights from the model files in huggingface format into a dictionary of tensors,
     normalizing the attention weights, and casting all tensors (except for all layer norm weights,
     which are converted to float32) to the specified dtype.
-    TODO: Why do layer norm weights have to be fp32?
     """
     weights = {}
     for model_path in model_files:
@@ -135,16 +206,36 @@ def load_weights(model_files, dtype_str, metadata, tie_word_embeddings):
 
     # convert weights
     progress = 0
-    def conv(name, t):
+    def conv(name: str, t: torch.Tensor) -> torch.Tensor:
         nonlocal progress
         progress += 1
-        actual_type = dtype_str
+        actual_type = target_type
         if name == "model.embed.weight" or name == "model.output.weight":
-            actual_type = "f16"
+            actual_type = TensorType.f16
 
-        return convert_tensor(t, name, actual_type)
+        if args.analyze:
+            print(f"{name}[{t.dtype}, range={torch.max(t) - torch.min(t):.4f}]", end="")
+        else:
+            print(f"{name}: {t.dtype} => {actual_type}")
 
-    tensors = {"model.embed.weight": conv("model.embed.weight", weights["model.embed_tokens.weight"])}
+        convt = actual_type.convert_to(t)
+
+        if args.analyze:
+            o = t.to(torch.float32)
+            q = convt.to(torch.float32)
+            mse = torch.mean((o * 1000 - q * 1000) ** 2)
+            normalized_error = torch.sum(torch.abs(o - q)) / torch.sum(torch.abs(o))
+            cos_sim = torch.cosine_similarity(o.view(-1).unsqueeze(0), q.view(-1).unsqueeze(0)).item()
+            snr = 10 * torch.log10(torch.sum(o ** 2) / torch.sum((o - q) ** 2))
+            accuracy = torch.mean((torch.abs(o - q) <= 0.00025).float()).item()
+
+            print(f" => {actual_type}: mse={mse:.2f}, norm_err_k={normalized_error:.2f}, cosine={cos_sim:.3f}, snr={snr:.2f}, accuracy={accuracy:.2f})")
+
+        return convt
+
+    tensors = {}
+
+    tensors["model.embed.weight"] = conv("model.embed.weight", weights["model.embed_tokens.weight"])
 
     for l in range(config["num_hidden_layers"]):
         tensors[f"model.layers.{l}.attn.norm.weight"] = weights[f"model.layers.{l}.input_layernorm.weight"].float()
@@ -293,92 +384,73 @@ def validate_files(file_paths: dict):
             raise Exception(f"Missing required file: {name} at {path}")
     print("All files downloaded and validated successfully!")
 
-def float32_to_f8_e4m3(data):
-    """
-    Vectorized conversion of a PyTorch tensor of float32 values to f8.e4m3.
-    Args:
-        data (torch.Tensor): Input tensor with float32 values.
-    Returns:
-        torch.Tensor: Output tensor with uint8 values representing f8.e4m3.
-    """
-    # Signs
-    sign = torch.where(data < 0, 0x80, 0x00)
-    abs_val = data.abs()
 
-    # Handle special cases
-    nan_mask = abs_val.isnan()
-    zero_mask = abs_val == 0.0
-    overflow_mask = abs_val > 240.0
-    underflow_mask = abs_val < 0.015625
-
-    # Compute mantissa and exponent
-    mantissa, exponent = torch.frexp(abs_val)
-    exponent += 7  # Apply bias
-
-    # Clamp exponent
-    exponent = torch.clamp(exponent, 0, 15).to(torch.uint8)
-    mantissa_bits = ((mantissa * 8).to(torch.uint8) & 0x7)
-
-    # Combine sign, exponent, and mantissa
-    result = sign | (exponent << 3) | mantissa_bits
-
-    # Apply special case masks
-    result[nan_mask] = 0x7F  # NaN
-    result[zero_mask] = 0x00  # Zero
-    result[overflow_mask] = 0x7F  # Overflow
-    result[underflow_mask] = 0x00  # Underflow
-
-    return result
-
-
-def convert_tensor(tensor, name, dtype_str):
+def convert_tensor(original_tensor: torch.Tensor, dtype_str: str) -> torch.Tensor:
     """
     Convert tensor data to the target_dtype.
     """
 
+    if original_tensor.device.type != "cpu":
+        raise ValueError(f"Tensor must be on cpu!")
+
+    converted_tensor: torch.Tensor
+
     if dtype_str == "f32":
-        return tensor.to(torch.float32)
+        converted_tensor = original_tensor.to(torch.float32)
     elif dtype_str == "f16":
-        return tensor.to(torch.float16)
+        converted_tensor = original_tensor.to(torch.float16)
     elif dtype_str == 'f8.e4m3':
         torchtype = getattr(torch, "float8_e4m3fn")
-        return tensor.to(torchtype)
-
-        converted = torch.empty(tensor.numel(), dtype=torch.uint8, device=tensor.device)
-
-        chunk_size = max(1024, tensor.numel() // 128)  # At least 1MB or 1% of tensor size
-
-        with tqdm(total=tensor.numel(), desc=f"Converting {name} {tuple(tensor.shape)}", unit="values") as progress:
-            for start in range(0, tensor.numel(), chunk_size):
-                end = min(start + chunk_size, tensor.numel())
-                chunk = tensor.flatten()[start:end]  # Flatten and slice the tensor
-                converted[start:end] = float32_to_f8_e4m3(chunk)  # Perform the conversion
-                progress.update(end - start)
-
-        if tensor.numel() != converted.numel():
-            raise ValueError(f"Unexpected element count!")
-
-        print(tensor.storage_type())
-        print(converted.storage_type())
-
-        # Reshape to the original tensor shape
-        return converted.reshape(tensor.shape)
+        converted_tensor = original_tensor.to(torchtype)
+    elif dtype_str == 'f8.e5m2':
+        torchtype = getattr(torch, "float8_e5m2")
+        converted_tensor = original_tensor.to(torchtype)
+    elif dtype_str == "f4.e2m1":
+        converted_tensor = quantize_to_f4_e2m1(original_tensor)
     else:
         raise ValueError(f"Unsupported target dtype: {dtype_str}")
+
+    # print(f"Converted tensor: {converted_tensor}")
+    return converted_tensor
+
+        #
+        # converted = torch.empty(tensor.numel(), dtype=torch.uint8, device=tensor.device)
+        #
+        # chunk_size = max(1024, tensor.numel() // 128)  # At least 1MB or 1% of tensor size
+        #
+        # with tqdm(total=tensor.numel(), desc=f"Converting {name} {tuple(tensor.shape)}", unit="values") as progress:
+        #     for start in range(0, tensor.numel(), chunk_size):
+        #         end = min(start + chunk_size, tensor.numel())
+        #         chunk = tensor.flatten()[start:end]  # Flatten and slice the tensor
+        #         converted[start:end] = float32_to_f8_e4m3(chunk)  # Perform the conversion
+        #         progress.update(end - start)
+        #
+        # if tensor.numel() != converted.numel():
+        #     raise ValueError(f"Unexpected element count!")
+        #
+        # print(tensor.storage_type())
+        # print(converted.storage_type())find
+        #
+        # # Reshape to the original tensor shape
+        # return converted.reshape(tensor.shape)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert model files with tokenizer and config, supporting URL input.")
 
     parser.add_argument("--input", type=str, help="Base URL/path with files.", required=True)
-    parser.add_argument("--output", type=str, help="Output file path for the converted model.", required=True)
+    parser.add_argument("--output", type=str, help="Output file path for the converted model.", default = "", required=False)
     parser.add_argument("--temp-dir", type=str, help="Temporary directory to store downloaded files.", default="./temp")
-    parser.add_argument("--type", type=str, default="f8", choices=SUPPORTED_DTYPES)
+    parser.add_argument("--type", type=str, default="f16", choices=TensorType.get_supported_types())
     parser.add_argument("--token", type=str, help="Hugging Face access token for private models.", required=False)
+    parser.add_argument("--analyze", type=bool, nargs="?", const=True, help="Only analyze the input file.", default=False)
 
     args = parser.parse_args()
 
-    if args.type == "f8":
-        args.type = "f8.e4m3"
+    if args.output == "":
+        if not args.analyze:
+            print(f"--output must be specified!")
+            sys.exit(1)
 
     try:
         print("Processing input...")
@@ -404,11 +476,19 @@ if __name__ == "__main__":
         metadata = Metadata(config, args.type)
 
     tokens = load_tokens(tokenizer_path, metadata.vocab_size)
-    tensors = load_weights(model_weights, args.type, metadata, config.get("tie_word_embeddings", None))
+    tensors = load_weights(model_weights, TensorType[args.type], metadata, config.get("tie_word_embeddings", None))
 
     # add tokenizer tensors at the end (to maximize the chance of model tensor alignment)
     # note: we concatenate all bytes of all tokens into a single tensor
     tensors["tokenizer.tokens"] = torch.cat([torch.tensor([x for x in b] + [0], dtype=torch.uint8) for b in tokens])
 
-    print(f"Saving {len(tensors)} tensors...")
-    save_file(tensors, args.output, metadata.to_dict())
+    if not args.analyze:
+        print(f"Saving {len(tensors)} tensors...")
+        for k, v in tensors.items():
+            assert v.layout == torch.strided and v.is_contiguous()
+
+        save_file(tensors, args.output, metadata.to_dict())
+
+        print(f"saved to {args.output}")
+
+    print("Done!")

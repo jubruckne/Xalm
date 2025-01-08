@@ -2,14 +2,11 @@
 
 #include "json.hpp"
 #include <algorithm>
-#include <array>
 #include <cfloat>
 #include "fmt/format.h"
 #include <iostream>
 #include "types.h"
 #include <string>
-
-// #include "immintrin.h"
 
 using json = nlohmann::json;
 
@@ -64,7 +61,7 @@ size_t Config::active_bytes(size_t pos) const {
   bytes_per_block += n_heads * head_dim * dim * weight_size; // wo
   bytes_per_block += 3 * dim * hidden_dim * weight_size; // w1, w2, w3
   size_t kv_len = std::min(static_cast<size_t>(max_seq_len), pos + 1);
-  size_t kv_entry_size = sizeof(f16_t);
+  size_t kv_entry_size = sizeof(float16_t);
   bytes_per_block += 2 * kv_len * n_kv_heads * head_dim * kv_entry_size; // key_cache, value_cache
 
   size_t bytes = 0;
@@ -76,7 +73,7 @@ size_t Config::active_bytes(size_t pos) const {
   return bytes;
 }
 
-const Tensor* check_tensor(const Tensor* tensor, std::array<int, 4> shape) {
+const Tensor* check_tensor(const Tensor* tensor, const std::vector<int> &shape) {
   if (tensor == nullptr) {
     std::cerr << "FATAL: missing tensor" << std::endl;
     assert(false);
@@ -84,15 +81,9 @@ const Tensor* check_tensor(const Tensor* tensor, std::array<int, 4> shape) {
   }
 
   if (tensor->shape != shape) {
-    std::cerr << "FATAL: tensor mismatch for " << tensor->name << std::endl;
-    std::cerr 
-      << fmt::format("expected: shape=[{},{},{},{}]", shape[0], shape[1], shape[2], shape[3])
-      << std::endl;
-    std::cerr 
-      << fmt::format("got: dtype={}, shape=[{},{},{},{}]", tensor->type.to_string(), tensor->shape[0], tensor->shape[1], tensor->shape[2], tensor->shape[3])
-      << std::endl;
-    assert(false);
+    throw std::invalid_argument(std::format("FATAL: tensor mismatch for {}. Expected {}, got {}", tensor->name, shape, tensor->shape));
   }
+
   return tensor;
 }
 
@@ -107,7 +98,7 @@ const Tensor* get_tensor(const YALMData& yalm, const std::string& key) {
 	return &tensor;
 }
 
-const Tensor* get_tensor(const YALMData& yalm, const std::string& key, std::array<int, 4> shape) {
+const Tensor* get_tensor(const YALMData& yalm, const std::string& key, const std::vector<int> &shape) {
   auto it = yalm.tensors.find(key);
   if (it == yalm.tensors.end()) {
     std::cerr << "FATAL: missing tensor: " << key << std::endl;
@@ -117,15 +108,7 @@ const Tensor* get_tensor(const YALMData& yalm, const std::string& key, std::arra
   const Tensor& tensor = it->second;
 
   if (tensor.shape != shape) {
-    std::cerr << "FATAL: tensor mismatch for " << tensor.name << std::endl;
-    std::cerr
-      << fmt::format("expected: shape=[{},{},{},{}]", shape[0], shape[1], shape[2], shape[3])
-      << std::endl;
-    std::cerr
-      << fmt::format("got: dtype={}, shape=[{},{},{},{}]", tensor.type.to_string(), tensor.shape[0], tensor.shape[1], tensor.shape[2], tensor.shape[3])
-      << std::endl;
-    assert(false);
-    return nullptr;
+    throw std::invalid_argument(std::format("FATAL: tensor mismatch for {}. Expected {}, got {}", tensor.name, shape, tensor.shape));
   }
 
   return &tensor;
@@ -147,21 +130,21 @@ Block::Block(
   _layer_i = layer_i;
   _config = config;
 
-  _rms_att_weight = check_tensor(rms_att_weight, {config->dim, 0, 0, 0});
-  _rms_ffn_weight = check_tensor(rms_ffn_weight, {config->dim, 0, 0, 0});
+  _rms_att_weight = check_tensor(rms_att_weight, {config->dim});
+  _rms_ffn_weight = check_tensor(rms_ffn_weight, {config->dim});
 
-  _wq = check_tensor(wq, {config->n_heads * config->head_dim, config->dim, 0, 0});
-  _wk = check_tensor(wk, {config->n_kv_heads * config->head_dim, config->dim, 0, 0});
-  _wv = check_tensor(wv, {config->n_kv_heads * config->head_dim, config->dim, 0, 0});
+  _wq = check_tensor(wq, {config->n_heads * config->head_dim, config->dim});
+  _wk = check_tensor(wk, {config->n_kv_heads * config->head_dim, config->dim});
+  _wv = check_tensor(wv, {config->n_kv_heads * config->head_dim, config->dim});
 
-  _wo = check_tensor(wo, {config->dim, config->n_heads * config->head_dim, 0, 0});
+  _wo = check_tensor(wo, {config->dim, config->n_heads * config->head_dim});
 
-  _w1 = check_tensor(w1, {config->hidden_dim, config->dim, 0, 0});
-  _w2 = check_tensor(w2, {config->dim, config->hidden_dim, 0, 0});
-  _w3 = check_tensor(w3, {config->hidden_dim, config->dim, 0, 0});
+  _w1 = check_tensor(w1, {config->hidden_dim, config->dim});
+  _w2 = check_tensor(w2, {config->dim, config->hidden_dim});
+  _w3 = check_tensor(w3, {config->hidden_dim, config->dim});
 
-  _key_cache = new f16_t[config->max_seq_len * config->n_kv_heads * config->head_dim]();
-  _value_cache = new f16_t[config->max_seq_len * config->n_kv_heads * config->head_dim]();
+  _key_cache = new float16_t[config->max_seq_len * config->n_kv_heads * config->head_dim]();
+  _value_cache = new float16_t[config->max_seq_len * config->n_kv_heads * config->head_dim]();
 }
 
 Block::~Block() {
@@ -299,7 +282,7 @@ Model::Model(YALMData& yalm, int context) {
   config->from_yalm(yalm, context);
   printf("loading model...\n");
 
-  token_embedding_table = get_tensor(yalm, "model.embed.weight", {config->vocab_size, config->dim, 0, 0});
+  token_embedding_table = get_tensor(yalm, "model.embed.weight", {config->vocab_size, config->dim});
 
   //auto ttt = get_tensor(yalm, "model.embed.weight");
   //auto tty = ttt->convert_to(DType::F8);
@@ -320,8 +303,8 @@ Model::Model(YALMData& yalm, int context) {
     ));
   }
 
-  rms_final_weight = get_tensor(yalm, "model.norm.weight", {config->dim, 0, 0, 0});
-  wcls = get_tensor(yalm, "model.output.weight", {config->vocab_size, config->dim, 0, 0});
+  rms_final_weight = get_tensor(yalm, "model.norm.weight", {config->dim});
+  wcls = get_tensor(yalm, "model.output.weight", {config->vocab_size, config->dim});
 }
 
 /*

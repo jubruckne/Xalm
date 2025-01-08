@@ -27,7 +27,6 @@ static void save_debug_tensor(const std::string& name, T* x, size_t size) {
 }
 #endif
 
-
 static void matmul(float* __restrict__ xout, const float* __restrict__ x, const float* __restrict__ w, const int n, const int d) {
   // W (d,n) @ x (n,) -> xout (d,)
   profile(std::format("{}x{}", n,d));
@@ -48,7 +47,7 @@ static void matmul(float* __restrict__ xout, const float* __restrict__ x, const 
   }
 }
 
-static void matmul(float* xout, const float* x, const f16_t* w, const int n, const int d) {
+static void matmul(float* xout, const float* x, const float16_t* w, const int n, const int d) {
 	// W (d,n) @ x (n,) -> xout (d,)
   profile(std::format("{}x{}", n,d));
 
@@ -57,7 +56,7 @@ static void matmul(float* xout, const float* x, const f16_t* w, const int n, con
 	for (i = 0; i < d; i++) {
 		float val = 0.0f;
 		for (int j = 0; j < n; j++) {
-			val += f16_t::to_float(w[i * n + j]) * x[j];
+			val += w[i * n + j] * x[j];
 		}
 		xout[i] = val;
 	}
@@ -93,7 +92,7 @@ void matmul(float* xout, const float* x, const Tensor* w, const int n, const int
       return;
     }
     case Type::F16: {
-      matmul(xout, x, static_cast<const f16_t*>(w->data), n, d);
+      matmul(xout, x, static_cast<const float16_t*>(w->data), n, d);
       return;
     }
     case Type::F8: {
@@ -101,7 +100,7 @@ void matmul(float* xout, const float* x, const Tensor* w, const int n, const int
       return;
     }
     default: {
-      printf("matmul: unsupported data type: %s\n", w->type.to_string().data());
+      std::print("matmul: unsupported data type: {}\n", w->type.name().data());
       assert(false);
     }
   }
@@ -207,8 +206,8 @@ void attn(
   float* xout,    // (dim,) - output vector
   float* atth,    // (kv_len,) - scratch space to hold attention scores of the sequence
   float* qh,      // (head_dim,) - query vector for this head
-  f16_t* kh,      // (kv_len, n_kv_heads, head_dim) - buffer containing key vectors of the sequence for all KV heads
-  f16_t* vh,      // (kv_len, n_kv_heads, head_dim) - buffer containing value vectors of the sequence for all KV heads
+  float16_t* kh,      // (kv_len, n_kv_heads, head_dim) - buffer containing key vectors of the sequence for all KV heads
+  float16_t* vh,      // (kv_len, n_kv_heads, head_dim) - buffer containing value vectors of the sequence for all KV heads
   int head_dim,   // size of the "key-space"
   int n_kv_heads, // number of kv heads, can be < n_heads (1 is MultiQueryAttention, >1 is GroupedQueryAttention)
   int kv_len      // number of tokens of the sequence we will attend over
@@ -218,7 +217,7 @@ void attn(
   for (int t = 0; t < kv_len; ++t) {
     float score = 0.0f;
     for (int i = 0; i < head_dim; ++i) {
-      score += qh[i] * f16_t::to_float(kh[t * kv_stride + i]);
+      score += qh[i] * kh[t * kv_stride + i];
     }
     score /= sqrtf(head_dim);
     atth[t] = score;
@@ -231,7 +230,7 @@ void attn(
   for (int i = 0; i < head_dim; ++i) {
     float vi = 0.0f;
     for (int t = 0; t < kv_len; ++t) {
-      vi += atth[t] * f16_t::to_float(vh[t * kv_stride + i]);
+      vi += atth[t] * vh[t * kv_stride + i];
     }
     xout[i] = vi;
   }
@@ -284,12 +283,12 @@ void Block::_block_cpu(
   rope(s.k(), kv_dim, c.head_dim, pos, c.rope_theta, c.rotary_dim);
   
   // key and value point to the kv cache
-  f16_t* kb = key_cache();
-  f16_t* vb = value_cache();
+  float16_t* kb = key_cache();
+  float16_t* vb = value_cache();
   // update kv cache
   for (int i = 0; i < kv_dim; ++i) {
-    kb[kv_pos * kv_dim + i] = f16_t::from_float(s.k()[i]);
-    vb[kv_pos * kv_dim + i] = f16_t::from_float(s.v()[i]);
+    kb[kv_pos * kv_dim + i] = s.k()[i];
+    vb[kv_pos * kv_dim + i] = s.v()[i];
   }
 
   // Sink tokens remain untouched while the rest of the KV cache is incrementally 
@@ -298,13 +297,13 @@ void Block::_block_cpu(
   // forward by 1. See https://arxiv.org/abs/2309.17453 for more.
   for (int r = 0; r < kv_sink; r++) {
     for (int i = 0; i < kv_dim; ++i) {
-      s.k()[i] = f16_t::to_float(kb[r * kv_dim + i]);
+      s.k()[i] = kb[r * kv_dim + i];
     }
 
     rope(s.k(), kv_dim, c.head_dim, 1, c.rope_theta, c.rotary_dim);
 
     for (int i = 0; i < kv_dim; i++) {
-      kb[r * kv_dim + i] = f16_t::from_float(s.k()[i]);
+      kb[r * kv_dim + i] = s.k()[i];
     }
   }
 
@@ -314,8 +313,8 @@ void Block::_block_cpu(
 #pragma omp parallel for private(h)
   for (h = 0; h < c.n_heads; h++) {
     int kv_head_offset = (h / q_per_kv_head) * c.head_dim;
-    f16_t* kh = kb + kv_head_offset;
-    f16_t* vh = vb + kv_head_offset;
+    float16_t* kh = kb + kv_head_offset;
+    float16_t* vh = vb + kv_head_offset;
     attn(s.xb2(h), s.att(h), s.q(h), kh, vh, c.head_dim, c.n_kv_heads, kv_len);
   }
 
@@ -365,8 +364,8 @@ void Block::_block_cpu(
 void mha_cpu(
   float* xout,  // (n_heads, head_dim)
   float* att,   // (n_heads, max_seq_len)
-  f16_t* kb,    // (max_seq_len, n_kv_heads, head_dim)
-  f16_t* vb,    // (max_seq_len, n_kv_heads, head_dim)
+  float16_t* kb,    // (max_seq_len, n_kv_heads, head_dim)
+  float16_t* vb,    // (max_seq_len, n_kv_heads, head_dim)
   float* q,     // (n_heads, head_dim)
   int head_dim, int kv_len, int max_seq_len, int n_heads, int n_kv_heads
 ) {
@@ -378,8 +377,8 @@ void mha_cpu(
 #pragma omp parallel for private(h)
   for (h = 0; h < n_heads; h++) {
     int kv_head_offset = (h / q_per_kv_head) * head_dim;
-    f16_t* kh = kb + kv_head_offset;
-    f16_t* vh = vb + kv_head_offset;
+    float16_t* kh = kb + kv_head_offset;
+    float16_t* vh = vb + kv_head_offset;
     attn(
       xout + head_dim * h, att + max_seq_len * h, q + head_dim * h, 
       kh, vh, head_dim, n_kv_heads, kv_len
@@ -436,9 +435,9 @@ void Model::_copy_embedding(const InferenceState& s, const int token) const {
       break;
     }
     case Type::F16: {
-      const auto* emb = static_cast<f16_t*>(token_embedding_table->data);
+      const auto* emb = static_cast<float16_t*>(token_embedding_table->data);
       for (int i = 0; i < c.dim; ++i) {
-        s.x()[i] = f16_t::to_float(emb[token * c.dim + i]);
+        s.x()[i] = emb[token * c.dim + i];
       }
       break;
     }
