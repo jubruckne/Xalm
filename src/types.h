@@ -9,13 +9,13 @@
 #endif
 
 
-template<int8_t N> consteval float EXP2() {
+template<int8_t N> consteval float EXP2() noexcept {
   if constexpr (N==0) return 1;
   if constexpr (N>0) return EXP2<N-1>()*2;
   if constexpr (N<0) return EXP2<N+1>()/2;
 }
 
-template<int8_t N> consteval int EXP_I2() requires (N >= 0) {
+template<int8_t N> consteval int EXP_I2() noexcept requires (N >= 0) {
   if constexpr (N==0) return 1;
   if constexpr (N>0) return EXP_I2<N-1>()*2;
 }
@@ -25,7 +25,7 @@ struct f8_t {
 private:
   uint8_t bits = 0;
 
-  explicit f8_t(const uint8_t bits) : bits(bits) {}
+  explicit f8_t(const uint8_t bits) noexcept: bits(bits) {}
 
   static constexpr int E_BIAS = EXP2<E-1>()-1;
   static constexpr float E_BIAS_MINUS_127 = EXP2<E_BIAS-127>();
@@ -33,7 +33,7 @@ private:
   static constexpr float max = (2-EXP2<-M+1>())*EXP2<EXP_I2<E-1>()>();
   static constexpr float min = EXP2<-M>()*EXP2<2-EXP_I2<E-1>()>();
 public:
-  static f8_t from(const float value) {
+  static f8_t from(const float value) noexcept {
     union {
       float f;
       uint32_t bits;
@@ -52,7 +52,7 @@ public:
     return f8_t(bits);
   }
 
-  static float to_float(const f8_t value) {
+  static float to_float(const f8_t value) noexcept {
     union {
       float f;
       uint32_t bits;
@@ -197,22 +197,24 @@ struct Type {
   static const Type F32;
   static const Type F16;
   static const Type F8;
+  static const Type F8_E5M2;
   static const Type U8;
   static const Type QI4;
 
   int id;
   uint8_t bit_size;
 
-  constexpr Type(const int v, const size_t bit_size) : id(v), bit_size(bit_size) {  }
+  constexpr Type(const int v, const size_t bit_size) noexcept : id(v), bit_size(bit_size) {  }
 
-  ~Type() = default;
+  ~Type() noexcept = default;
 
-  constexpr operator int() const { return id; }
+  constexpr operator int() const noexcept { return id; }
 
   [[nodiscard]] constexpr std::string_view name() const {
     if (*this == Type::F32) return "F32";
     if (*this == Type::F16) return "F16";
     if (*this == Type::F8) return "F8";
+    if (*this == Type::F8_E5M2) return "F8_E5M2";
     if (*this == Type::U8) return "U8";
     if (*this == Type::QI4) return "QF4";
     return "UNKNOWN";
@@ -222,6 +224,7 @@ struct Type {
     if (*this == Type::F32) return offset * sizeof(float32_t);
     if (*this == Type::F16) return offset * sizeof(float16_t);
     if (*this == Type::F8) return offset * sizeof(uint8_t);
+    if (*this == Type::F8_E5M2) return offset * sizeof(uint8_t);
     if (*this == Type::U8) return offset * sizeof(uint8_t);
     if (*this == Type::QI4) return offset * sizeof(uint8_t) / 2;
     return 0;
@@ -238,6 +241,7 @@ struct Type {
     if (id == Type::F32.id) return *static_cast<const float32_t*>(d);
     if (id == Type::F16.id) return *static_cast<const float16_t*>(d);
     if (id == Type::F8.id) return f8e4m3_t::to_float(*static_cast<const f8e4m3_t*>(d));
+    if (id == Type::F8_E5M2.id) return f8e5m2_t::to_float(*static_cast<const f8e5m2_t*>(d));
 
     return 666.66f;
   }
@@ -256,6 +260,7 @@ struct Type {
     if (type_str == "F16") return Type::F16;
     if (type_str == "F8") return Type::F8;
     if (type_str == "F8.E4M3") return Type::F8;
+    if (type_str == "F8.E5M2") return Type::F8_E5M2;
     if (type_str == "U8") return Type::U8;
     if (type_str == "QF4") return Type::QI4;
     return Type::Unknown;
@@ -274,8 +279,9 @@ constexpr Type Type::Unknown{0, 0};
 constexpr Type Type::F32{1, sizeof(uint32_t) * 8};
 constexpr Type Type::F16{2, sizeof(uint16_t) * 8};
 constexpr Type Type::F8{3, sizeof(uint8_t) * 8};
-constexpr Type Type::U8{4, sizeof(uint8_t) * 8};
-constexpr Type Type::QI4{5, sizeof(uint8_t) * 4};
+constexpr Type Type::F8_E5M2{4, sizeof(uint8_t) * 8};
+constexpr Type Type::U8{5, sizeof(uint8_t) * 8};
+constexpr Type Type::QI4{6, sizeof(uint8_t) * 4};
 
 struct qi8_t {
   static constexpr int block_length = 8;

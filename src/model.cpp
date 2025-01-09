@@ -10,7 +10,7 @@
 
 using json = nlohmann::json;
 
-void Config::from_yalm(YALMData& yalm, int context) {
+void Config::from_yalm(YALMData& yalm, const int context) {
   dim = std::stoi(yalm.metadata.at("dim").get<std::string>());
   hidden_dim = std::stoi(yalm.metadata.at("hidden_dim").get<std::string>());
   head_dim = std::stoi(yalm.metadata.at("head_dim").get<std::string>());
@@ -30,7 +30,7 @@ void Config::from_yalm(YALMData& yalm, int context) {
 
   norm_eps = std::stof(yalm.metadata.value("norm_eps", "1e-5"));
 
-  std::string act_str = yalm.metadata.value("act_type", "gelu");
+  const std::string act_str = yalm.metadata.value("act_type", "gelu");
   if (act_str == "gelu") {
     act = ActivationType::GELU;
   } else if (act_str == "silu") {
@@ -40,7 +40,7 @@ void Config::from_yalm(YALMData& yalm, int context) {
     act = ActivationType::GELU;
   }
 
-  std::string norm_type_str = yalm.metadata.value("norm_type", "rmsnorm");
+  const std::string norm_type_str = yalm.metadata.value("norm_type", "rmsnorm");
   if (norm_type_str == "rmsnorm") {
     norm_type = LayerNormType::RMSNorm;
   } else {
@@ -51,8 +51,8 @@ void Config::from_yalm(YALMData& yalm, int context) {
   qkv_clip = yalm.metadata.contains("qkv_clip") ? std::stof(yalm.metadata.at("qkv_clip").get<std::string>()) : FLT_MAX;
 }
 
-size_t Config::active_bytes(size_t pos) const {
-  size_t weight_size = sizeof(float);
+size_t Config::active_bytes(const size_t pos) const {
+  const size_t weight_size = sizeof(float);
 
   size_t bytes_per_block = 0;
   bytes_per_block += 2 * dim * sizeof(float); // rms_att_weight, rms_ffn_weight
@@ -60,7 +60,7 @@ size_t Config::active_bytes(size_t pos) const {
   bytes_per_block += 2 * n_kv_heads * head_dim * dim * weight_size; // wk, wv
   bytes_per_block += n_heads * head_dim * dim * weight_size; // wo
   bytes_per_block += 3 * dim * hidden_dim * weight_size; // w1, w2, w3
-  size_t kv_len = std::min(static_cast<size_t>(max_seq_len), pos + 1);
+  const size_t kv_len = std::min(static_cast<size_t>(max_seq_len), pos + 1);
   size_t kv_entry_size = sizeof(float16_t);
   bytes_per_block += 2 * kv_len * n_kv_heads * head_dim * kv_entry_size; // key_cache, value_cache
 
@@ -88,7 +88,7 @@ const Tensor* check_tensor(const Tensor* tensor, const std::vector<int> &shape) 
 }
 
 const Tensor* get_tensor(const YALMData& yalm, const std::string& key) {
-	auto it = yalm.tensors.find(key);
+	const auto it = yalm.tensors.find(key);
 	if (it == yalm.tensors.end()) {
 		std::cerr << "FATAL: missing tensor: " << key << std::endl;
 		assert(false);
@@ -99,7 +99,7 @@ const Tensor* get_tensor(const YALMData& yalm, const std::string& key) {
 }
 
 const Tensor* get_tensor(const YALMData& yalm, const std::string& key, const std::vector<int> &shape) {
-  auto it = yalm.tensors.find(key);
+  const auto it = yalm.tensors.find(key);
   if (it == yalm.tensors.end()) {
     std::cerr << "FATAL: missing tensor: " << key << std::endl;
     assert(false);
@@ -153,46 +153,15 @@ Block::~Block() {
     delete[] _value_cache;
   } else {
     std::cerr << "FATAL: unsupported device " << std::endl;
-
-    //free_cuda(_key_cache);
-    //free_cuda(_value_cache);
   }
 }
-
-/*
-void Block::cuda() {
-  if (_device != Device::CPU) {
-    return;
-  }
-  _device = Device::CUDA;
-  size_t weight_size = dtype_size(_config->weight_dtype);
-  // norms
-  _rms_att_weight = static_cast<float*>(upload_cuda(_rms_att_weight, _config->dim * sizeof(float)));
-  _rms_ffn_weight = static_cast<float*>(upload_cuda(_rms_ffn_weight, _config->dim * sizeof(float)));
-
-  // self-attention
-  _wq = upload_cuda(_wq, _config->n_heads * _config->head_dim * _config->dim * weight_size);
-  _wk = upload_cuda(_wk, _config->n_kv_heads * _config->head_dim * _config->dim * weight_size);
-  _wv = upload_cuda(_wv, _config->n_kv_heads * _config->head_dim * _config->dim * weight_size);
-  _wo = upload_cuda(_wo, _config->dim * _config->n_heads * _config->head_dim * weight_size);
-
-  // ffn
-  _w1 = upload_cuda(_w1, _config->hidden_dim * _config->dim * weight_size);
-  _w2 = upload_cuda(_w2, _config->dim * _config->hidden_dim * weight_size);
-  _w3 = upload_cuda(_w3, _config->hidden_dim * _config->dim * weight_size);
-
-  // kv cache
-  _key_cache = static_cast<f16_t*>(upload_cuda(_key_cache, _config->max_seq_len * _config->n_kv_heads * _config->head_dim * sizeof(f16_t)));
-  _value_cache = static_cast<f16_t*>(upload_cuda(_value_cache, _config->max_seq_len * _config->n_kv_heads * _config->head_dim * sizeof(f16_t)));
-}
-*/
 
 void Block::block(
-  InferenceState& s,  // inference state
-  int pos,            // index of the current token in the sequence
-  int kv_sink,        // number of sink tokens currently in the KV cache
-  int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
-  int kv_len          // number of tokens in the kv cache that we will attend over
+  const InferenceState& s,  // inference state
+  const int pos,            // index of the current token in the sequence
+  const int kv_sink,        // number of sink tokens currently in the KV cache
+  const int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
+  const int kv_len          // number of tokens in the kv cache that we will attend over
 ) const {
   /*
   if (_device == Device::CUDA) {
@@ -243,89 +212,38 @@ InferenceState::~InferenceState() {
     delete[] _att;
     delete[] _logits;
   } else {
-    /*free_cuda(_x);
-    free_cuda(_xb);
-    free_cuda(_xb2);
-    free_cuda(_hb);
-    free_cuda(_hb2);
-    free_cuda(_q);
-    free_cuda(_k);
-    free_cuda(_v);
-    free_cuda(_att);
-    unregister_cuda_host(_logits);
-    delete[] _logits;*/
     std::cerr << "FATAL: unsupported device " << std::endl;
   }
 }
 
-/*
-void InferenceState::cuda() {
-  if (_device != Device::CPU) {
-    return;
-  }
-  _device = Device::CUDA;
-  _x = static_cast<float*>(upload_cuda(_x, _config->dim * sizeof(float)));
-  _xb = static_cast<float*>(upload_cuda(_xb, _config->dim * sizeof(float)));
-  _xb2 = static_cast<float*>(upload_cuda(_xb2, _config->dim * sizeof(float)));
-  _hb = static_cast<float*>(upload_cuda(_hb, _config->hidden_dim * sizeof(float)));
-  _hb2 = static_cast<float*>(upload_cuda(_hb2, _config->hidden_dim * sizeof(float)));
-  _q = static_cast<float*>(upload_cuda(_q, _config->n_heads * _config->head_dim * sizeof(float)));
-  _k = static_cast<float*>(upload_cuda(_k, _config->n_kv_heads * _config->head_dim * sizeof(float)));
-  _v = static_cast<float*>(upload_cuda(_v, _config->n_kv_heads * _config->head_dim * sizeof(float)));
-  _att = static_cast<float*>(upload_cuda(_att, _config->n_heads * _config->max_seq_len * sizeof(float)));
-  register_cuda_host(_logits, _config->vocab_size * sizeof(float));
-}
-*/
-
-Model::Model(YALMData& yalm, int context) {
+Model::Model(YALMData& yalm, const int context) {
   config = std::make_shared<Config>();
   config->from_yalm(yalm, context);
   printf("loading model...\n");
 
-  token_embedding_table = get_tensor(yalm, "model.embed.weight", {config->vocab_size, config->dim});
-
-  //auto ttt = get_tensor(yalm, "model.embed.weight");
-  //auto tty = ttt->convert_to(DType::F8);
+  token_embedding_table = get_tensor(yalm, "embed.weight", {config->vocab_size, config->dim});
 
   for (int i = 0; i < config->n_layers; ++i) {
     blocks.emplace_back(std::make_shared<Block>(
       i,
       config,
-      get_tensor(yalm, fmt::format("model.layers.{}.attn.norm.weight", i)),
-      get_tensor(yalm, fmt::format("model.layers.{}.mlp.norm.weight", i)),
-      get_tensor(yalm, fmt::format("model.layers.{}.attn.wq.weight", i)),
-      get_tensor(yalm, fmt::format("model.layers.{}.attn.wk.weight", i)),
-      get_tensor(yalm, fmt::format("model.layers.{}.attn.wv.weight", i)),
-      get_tensor(yalm, fmt::format("model.layers.{}.attn.wo.weight", i)),
-      get_tensor(yalm, fmt::format("model.layers.{}.mlp.w1.weight", i)),
-      get_tensor(yalm, fmt::format("model.layers.{}.mlp.w2.weight", i)),
-      get_tensor(yalm, fmt::format("model.layers.{}.mlp.w3.weight", i))
+      get_tensor(yalm, fmt::format("l.{}.attn.norm.weight", i)),
+      get_tensor(yalm, fmt::format("l.{}.mlp.norm.weight", i)),
+      get_tensor(yalm, fmt::format("l.{}.attn.q.weight", i)),
+      get_tensor(yalm, fmt::format("l.{}.attn.k.weight", i)),
+      get_tensor(yalm, fmt::format("l.{}.attn.v.weight", i)),
+      get_tensor(yalm, fmt::format("l.{}.attn.down.weight", i)),
+      get_tensor(yalm, fmt::format("l.{}.mlp.gate.weight", i)),
+      get_tensor(yalm, fmt::format("l.{}.mlp.down.weight", i)),
+      get_tensor(yalm, fmt::format("l.{}.mlp.up.weight", i))
     ));
   }
 
-  rms_final_weight = get_tensor(yalm, "model.norm.weight", {config->dim});
-  wcls = get_tensor(yalm, "model.output.weight", {config->vocab_size, config->dim});
+  rms_final_weight = get_tensor(yalm, "output.norm.weight", {config->dim});
+  wcls = get_tensor(yalm, "output.weight", {config->vocab_size, config->dim});
 }
 
-/*
-void Model::cuda() {
-  if (_device != Device::CPU) {
-    return;
-  }
-  _device = Device::CUDA;
-  // TODO: support multiple CUDA devices
-  set_cuda_device(0);
-  size_t weight_size = dtype_size(config->weight_dtype);
-  token_embedding_table = upload_cuda(token_embedding_table, config->vocab_size * config->dim * weight_size);
-  for (auto& block : blocks) {
-    block->cuda();
-  }
-  rms_final_weight = static_cast<float*>(upload_cuda(rms_final_weight, config->dim * sizeof(float)));
-  wcls = upload_cuda(wcls, config->vocab_size * config->dim * weight_size);
-}
-*/
-
-void Model::forward(InferenceState& s, int token, int pos, InferenceMode mode) {
+void Model::forward(const InferenceState& s, const int token, const int pos, const InferenceMode mode) const {
   if (s.device() != _device) {
     std::cerr << "FATAL: inference state device mismatch" << std::endl;
     assert(false);
@@ -337,37 +255,3 @@ void Model::forward(InferenceState& s, int token, int pos, InferenceMode mode) {
     _forward_cpu(s, token, pos, mode);
   //}
 }
-
-#if DEBUG_MODEL
-DebugTensor::DebugTensor(const std::vector<float>& data) {
-  data_f32 = data;
-  data_type = DataType::F32;
-}
-DebugTensor::DebugTensor(const std::vector<f16_t>& data) {
-  data_f16 = data;
-  data_type = DataType::F16;
-}
-
-float DebugTensor::max_err(const DebugTensor& other) const {
-  if (data_type != other.data_type) {
-    return -1;
-  }
-  if (data_type == DataType::F32) {
-    float max_err = 0;
-    for (size_t i = 0; i < data_f32.size(); i++) {
-      max_err = std::max(max_err, std::abs(data_f32[i] - other.data_f32[i]));
-    }
-    return max_err;
-  } else {
-#if defined(__F16C__)
-    float max_err = 0;
-    for (size_t i = 0; i < data_f16.size(); i++) {
-      max_err = std::max(max_err, std::abs(_cvtsh_ss(data_f16[i]) - _cvtsh_ss(other.data_f16[i])));
-    }
-    return max_err;
-#else
-  assert(false && "float16 not supported on this platform");
-#endif
-  }
-}
-#endif

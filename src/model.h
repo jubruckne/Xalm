@@ -127,7 +127,7 @@ struct Block {
   // - `s.x()` contains the input to the block. Output will also go here.
   // - Block KV cache is hydrated.
   void block(
-    InferenceState& s,  // inference state
+    const InferenceState& s,  // inference state
     int pos,            // index of the current token in the sequence
     int kv_sink,        // number of sink tokens currently in the KV cache
     int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
@@ -138,7 +138,7 @@ struct Block {
 
 private:
   void _block_cpu(
-    InferenceState& s,  // inference state
+    const InferenceState& s,  // inference state
     int pos,            // index of the current token in the sequence
     int kv_sink,        // number of sink tokens currently in the KV cache
     int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
@@ -189,10 +189,10 @@ struct Model {
 
   explicit Model(YALMData& yalm, int context = 0);
   
-  void forward(InferenceState& s, int token, int pos, InferenceMode mode = InferenceMode::OUTPUT_LOGITS);
+  void forward(const InferenceState& s, int token, int pos, InferenceMode mode = InferenceMode::OUTPUT_LOGITS) const;
 
 private:
-  void _forward_cpu(InferenceState& s, int token, int pos, InferenceMode mode) const;
+  void _forward_cpu(const InferenceState& s, int token, int pos, InferenceMode mode) const;
   void _forward_cuda(InferenceState& s, int token, int pos, InferenceMode mode);
   void _copy_embedding(const InferenceState& s, int token) const;
 
@@ -251,5 +251,5 @@ void mha_cuda(
   int head_dim, int kv_len, int max_seq_len, int n_heads, int n_kv_heads
 );
 
-void matmul(float* xout, const float* x, const Tensor* w, int n, int d);
-void matmul(const Tensor& xout, const Tensor& a, const Tensor& b);
+void matmul(float* xout, const float* x, const Tensor* w, int n, int d) noexcept;
+void matmul(const Tensor& xout, const Tensor& a, const Tensor& b) noexcept;

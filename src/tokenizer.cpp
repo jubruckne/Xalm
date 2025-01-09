@@ -8,8 +8,8 @@ Tokenizer::Tokenizer(const YALMData& data) {
   // Q: should `vocab` include special tokens, e.g. '<unk>', '<s>', '</s>'?
   // TODO: avoid copy by using std::string_view
   const Tensor& tokens_tensor = data.tensors.at("tokenizer.tokens");
-  char* tokens_tensor_end = (char*)tokens_tensor.data + tokens_tensor.size;
-  for (char* ptr = (char*)tokens_tensor.data; ptr < tokens_tensor_end; ptr++) {
+  const char* tokens_tensor_end = static_cast<char *>(tokens_tensor.data) + tokens_tensor.size;
+  for (auto ptr = static_cast<char *>(tokens_tensor.data); ptr < tokens_tensor_end; ptr++) {
     char* s = ptr;
     while (*ptr != '\0' && ptr < tokens_tensor_end) {
       ptr++;
@@ -41,7 +41,7 @@ Tokenizer::Tokenizer(const YALMData& data) {
   }
 }
 
-std::string Tokenizer::decode_one(int prev_token, int token) const {
+std::string Tokenizer::decode_one(const int prev_token, const int token) const {
   const std::string& piece = vocab[token];
   // if following BOS token, sentencepiece decoder strips any leading whitespace
   if (prev_token == bos_id && piece[0] == ' ') {
@@ -54,7 +54,7 @@ std::string Tokenizer::decode_one(int prev_token, int token) const {
   return piece;
 }
 
-std::vector<int> Tokenizer::encode(const std::string& text, bool encode_bos) const {
+std::vector<int> Tokenizer::encode(const std::string& text, const bool encode_bos) const {
   std::vector<int> out_tokens;
   if (encode_bos) {
     out_tokens.push_back(bos_id);
@@ -95,7 +95,7 @@ std::vector<int> Tokenizer::encode(const std::string& text, bool encode_bos) con
 
 std::string Tokenizer::encoding_to_debug_string(const std::vector<int>& encoding) const {
   std::string token_encoding_debug_str = "";
-  for (int token_id : encoding) {
+  for (const int token_id : encoding) {
     if (token_id == bos_id) {
       token_encoding_debug_str += "[<s>:" + std::to_string(token_id) + "]";
     } else if (token_id == eos_id) {

@@ -6,12 +6,17 @@
 # - Performs quantization to fp8 if specified
 
 import argparse
+import ctypes
 import os
 import json
 import sys
 from enum import Enum
 from urllib.parse import urljoin
 
+import xxhash
+from torch.onnx.utils import unpack_quantized_tensor
+
+from quants import quantize as gguf_quantize, dequantize as gguf_dequantize, GGMLQuantizationType
 import requests
 import safetensors
 from safetensors.torch import save_file
@@ -22,48 +27,157 @@ SUPPORTED_ARCHITECTURES = [
     "MistralForCausalLM"
 ]
 
-class TensorType(Enum):
+class XTensor:
+    def __init__(self, t: torch.Tensor, name: str):
+        self.name = name
+        self.t = t
+        self.type = XType.from_torch(t.dtype)
+
+class XType(Enum):
     f32 = 1
     f16 = 2
     bf16 = 3
     f8_e4m3 = 4
     f8_e5m2 = 5
     f4_e2m1 = 6
+    qi8 = 7
+
+    # gguf types
+    q4_0 = 1007
+    q4_1 = 1008
+    q5_0 = 1009
+    q5_1 = 1010
+    q8_0 = 1011
+    tq1_0 = 1012
 
     @staticmethod
     def get_supported_types():
-        return [name for name in TensorType.__members__]
+        return [name for name in XType.__members__]
 
-    def convert_to(self, t: torch.tensor) -> torch.tensor:
-        if self == TensorType.f32:
+    def name(self) -> str:
+        return str.replace(str(self),"XType.", "")
+
+    def do_analyze(self) -> bool:
+        return True
+
+    @staticmethod
+    def parse(dtype: str):
+        if dtype == "f32":
+            return XType.f32
+        elif dtype == "f16":
+            return XType.f16
+        elif dtype == "bf16":
+            return XType.bf16
+        elif dtype == "f8_e4m3":
+            return XType.f8_e4m3
+        elif dtype == "f8_e5m2":
+            return XType.f8_e5m2
+        elif dtype == "f4_e2m1":
+            return XType.f4_e2m1
+        elif dtype == "qi8":
+            return XType.qi8
+
+        elif dtype == "q4_0":
+            return XType.q4_0
+        elif dtype == "q4_1":
+            return XType.q4_1
+        elif dtype == "q5_0":
+            return XType.q5_0
+        elif dtype == "q5_1":
+            return XType.q5_1
+        elif dtype == "q8_0":
+            return XType.q8_0
+        elif dtype == "tq1_0":
+            return XType.tq1_0
+        else:
+            raise ValueError(f"Unknown dtype {dtype}")
+
+    @staticmethod
+    def convert_to(t_from: torch.tensor, type_to, type_from=None) -> torch.tensor:
+        t: torch.tensor = None
+
+        if type_from is None:
+            if t_from.dtype == torch.float32:
+                t = t_from
+            elif t_from.dtype == torch.bfloat16:
+                t = t_from
+            else:
+                raise ValueError(f"Unsupported source type: {t_from.dtype}")
+        else:
+            if type_from == XType.f4_e2m1:
+                t = dequantize_from_f4_e2m1(t_from)
+            elif type_from == XType.f32:
+                t = t_from
+            elif type_from == XType.f16:
+                t = t_from
+            elif type_from == XType.bf16:
+                t = t_from
+            elif type_from == XType.f8_e4m3:
+                t = t_from.to(torch.float32)
+            elif type_from == XType.f8_e5m2:
+                t = t_from.to(torch.float32)
+            elif type_from == XType.qi8:
+                t = t_from.to(dequantize_from_qi8(t_from))
+
+            elif type_from == XType.q4_0:
+                t = torch.from_numpy(gguf_dequantize(t_from.numpy(), GGMLQuantizationType.Q4_0))
+            elif type_from == XType.q4_1:
+                t = torch.from_numpy(gguf_dequantize(t_from.numpy(), GGMLQuantizationType.Q4_1))
+            elif type_from == XType.q5_0:
+                t = torch.from_numpy(gguf_dequantize(t_from.numpy(), GGMLQuantizationType.Q5_0))
+            elif type_from == XType.q5_1:
+                t = torch.from_numpy(gguf_dequantize(t_from.numpy(), GGMLQuantizationType.Q5_1))
+            elif type_from == XType.q8_0:
+                t = torch.from_numpy(gguf_dequantize(t_from.numpy(), GGMLQuantizationType.Q8_0))
+            elif type_from == XType.tq1_0:
+                t = torch.from_numpy(gguf_dequantize(t_from.numpy(), GGMLQuantizationType.TQ1_0))
+            else:
+                raise ValueError(f"Unsupported source type: {t_from.dtype}")
+
+        if not t.dtype in [torch.float32, torch.float16, torch.bfloat16]:
+            raise ValueError(f"Unsupported source type: {t.dtype}")
+
+        if type_to == XType.f32:
             converted_tensor = t.to(torch.float32)
-        elif self == TensorType.f16:
+        elif type_to == XType.f16:
             converted_tensor = t.to(torch.float16)
-        elif self == TensorType.bf16:
+        elif type_to == XType.bf16:
             converted_tensor = t.to(torch.bfloat16)
-        elif self == TensorType.f8_e4m3:
+        elif type_to == XType.f8_e4m3:
             torchtype = getattr(torch, "float8_e4m3fn")
             converted_tensor = t.to(torchtype)
-        elif self == TensorType.f8_e5m2:
+        elif type_to == XType.f8_e5m2:
             torchtype = getattr(torch, "float8_e5m2")
             converted_tensor = t.to(torchtype)
-        elif self == "f4.e2m1":
-            converted_tensor = quantize_to_f4_e2m1(t)
+        elif type_to == XType.f4_e2m1:
+            converted_tensor = quantize_to_f4_e2m1(t.to(torch.float32))
+        elif type_to == XType.qi8:
+            converted_tensor = quantize_to_qi8(t.to(torch.float32))
+        elif type_to == XType.q4_0:
+            converted_tensor = torch.from_numpy(gguf_quantize(t.to(torch.float32).numpy(), GGMLQuantizationType.Q4_0))
+        elif type_to == XType.q4_1:
+            converted_tensor = torch.from_numpy(gguf_quantize(t.to(torch.float32).numpy(), GGMLQuantizationType.Q4_1))
+        elif type_to == XType.q5_0:
+            converted_tensor = torch.from_numpy(gguf_quantize(t.to(torch.float32).numpy(), GGMLQuantizationType.Q5_0))
+        elif type_to == XType.q5_1:
+            converted_tensor = torch.from_numpy(gguf_quantize(t.to(torch.float32).numpy(), GGMLQuantizationType.Q5_1))
+        elif type_to == XType.q8_0:
+            converted_tensor = torch.from_numpy(gguf_quantize(t.to(torch.float32).numpy(), GGMLQuantizationType.Q8_0))
+        elif type_to == XType.tq1_0:
+            converted_tensor = torch.from_numpy(gguf_quantize(t.to(torch.float32).numpy(), GGMLQuantizationType.TQ1_0))
         else:
-            raise ValueError(f"Unsupported target dtype: {self}")
+            raise ValueError(f"Unsupported target type: {type_to}")
 
         return converted_tensor
 
 
+
 class Metadata:
-    def __init__(self, config, type_str):
+    def __init__(self, config):
         arch = config["architectures"][0]
         if arch not in SUPPORTED_ARCHITECTURES:
             raise Exception(f"Architecture {arch} is not supported, must be one of {SUPPORTED_ARCHITECTURES}")
         self.arch = arch
-        if type_str not in TensorType.get_supported_types():
-            raise Exception(f"Data type {type_str} is not supported, must be one of {TensorType.get_supported_types()}")
-        self.type = type_str
         if arch == "MistralForCausalLM":
             self.dim = config["hidden_size"]
             self.hidden_dim = config["intermediate_size"]
@@ -83,8 +197,10 @@ class Metadata:
             assert config["hidden_act"] in ["gelu", "silu"]
             self.act_type = config["hidden_act"]
 
+            self.tensors = {}
+
     def to_dict(self):
-        result = {"arch": self.arch, "dtype": self.type}
+        result = {"arch": self.arch}
         if self.arch == "MistralForCausalLM":
             result["dim"] = str(self.dim)
             result["hidden_dim"] = str(self.hidden_dim)
@@ -101,6 +217,7 @@ class Metadata:
             result["norm_eps"] = str(self.norm_eps)
             result["norm_type"] = str(self.norm_type)
             result["act_type"] = str(self.act_type)
+            result["tensors"] = str(self.tensors)
         return result
 
 def load_tokens(tokenizer_path, vocab_size):
@@ -127,7 +244,133 @@ def load_tokens(tokenizer_path, vocab_size):
 
     return tokens
 
-def quantize_to_f4_e2m1(tensor):
+def pack_tensor(tensor: torch.tensor, bits: int, overflow_saturate: bool = False) -> torch.tensor:
+    # pack source tensor tightly
+    if tensor.dtype == torch.int8:
+        if torch.any(tensor < 0):
+            raise ValueError(f"Integer tensor {tensor} is negative")
+        t = tensor.to(torch.uint8)
+    elif tensor.dtype == torch.uint8:
+        t = tensor
+    elif tensor.dtype == torch.int32:
+        if torch.any(tensor < 0):
+            raise ValueError(f"Integer tensor {tensor} is negative")
+        t = tensor.to(torch.uint8)
+    else:
+        raise ValueError(f"Input tensor must be of dtype uint8 or int8, but is {tensor.dtype}")
+
+    max_value = (1 << bits) - 1
+    if overflow_saturate:
+        t = torch.clamp(t, 0, max_value)
+    else:
+        if torch.any(t > max_value):
+            raise ValueError(f"Tensor contains values exceeding the maximum for {bits}-bit packing: {max_value}")
+
+    if bits == 2:
+        # Group 4 values into 1 byte (2 bits each)
+        packed = torch.zeros((t.numel() + 3) // 4, dtype=torch.uint8)
+        for i in range(0, t.numel(), 4):
+            chunk = t[i:i+4].to(torch.uint8)
+            chunk = torch.cat([chunk, torch.zeros(4 - len(chunk), dtype=torch.uint8)])  # Padding if needed
+            packed[i // 4] = (chunk[0] << 6) | (chunk[1] << 4) | (chunk[2] << 2) | chunk[3]
+        return packed
+
+    if bits == 3:
+        # Group 8 values into 3 bytes (3 bits each)
+        packed = torch.zeros((t.numel() + 7) // 8 * 3, dtype=torch.uint8)
+        for i in range(0, t.numel(), 8):
+            chunk = t[i:i+8].to(torch.uint8)
+            chunk = torch.cat([chunk, torch.zeros(8 - len(chunk), dtype=torch.uint8)])  # Padding if needed
+            packed[i // 8 * 3 + 0] = (chunk[0] << 5) | (chunk[1] << 2) | (chunk[2] >> 1)
+            packed[i // 8 * 3 + 1] = ((chunk[2] & 0b1) << 7) | (chunk[3] << 4) | (chunk[4] << 1) | (chunk[5] >> 2)
+            packed[i // 8 * 3 + 2] = ((chunk[5] & 0b11) << 6) | (chunk[6] << 3) | chunk[7]
+        return packed
+
+    if bits == 4:
+        packed = (t[::2] << 4) | t[1::2]
+        return packed.to(torch.uint8)
+
+    if bits == 5:
+        # Group 8 values into 5 bytes (5 bits each)
+        packed = torch.zeros((t.numel() + 7) // 8 * 5, dtype=torch.uint8)
+        for i in range(0, t.numel(), 8):
+            chunk = t[i:i+8].to(torch.uint8)
+            chunk = torch.cat([chunk, torch.zeros(8 - len(chunk), dtype=torch.uint8)])  # Padding if needed
+            packed[i // 8 * 5 + 0] = (chunk[0] << 3) | (chunk[1] >> 2)
+            packed[i // 8 * 5 + 1] = ((chunk[1] & 0b11) << 6) | (chunk[2] << 1) | (chunk[3] >> 4)
+            packed[i // 8 * 5 + 2] = ((chunk[3] & 0b1111) << 4) | (chunk[4] >> 1)
+            packed[i // 8 * 5 + 3] = ((chunk[4] & 0b1) << 7) | (chunk[5] << 2) | (chunk[6] >> 3)
+            packed[i // 8 * 5 + 4] = ((chunk[6] & 0b111) << 5) | chunk[7]
+        return packed
+
+    if bits == 6:
+        # Group 4 values into 3 bytes (6 bits each)
+        packed = torch.zeros((t.numel() + 3) // 4 * 3, dtype=torch.uint8)
+        for i in range(0, t.numel(), 4):
+            chunk = t[i:i+4].to(torch.uint8)
+            chunk = torch.cat([chunk, torch.zeros(4 - len(chunk), dtype=torch.uint8)])  # Padding if needed
+            packed[i // 4 * 3 + 0] = (chunk[0] << 2) | (chunk[1] >> 4)
+            packed[i // 4 * 3 + 1] = ((chunk[1] & 0b1111) << 4) | (chunk[2] >> 2)
+            packed[i // 4 * 3 + 2] = ((chunk[2] & 0b11) << 6) | chunk[3]
+        return packed
+
+    if bits == 7:
+        # Group 8 values into 7 bytes (7 bits each)
+        packed = torch.zeros((t.numel() + 7) // 8 * 7, dtype=torch.uint8)
+        for i in range(0, t.numel(), 8):
+            chunk = t[i:i+8].to(torch.uint8)
+            chunk = torch.cat([chunk, torch.zeros(8 - len(chunk), dtype=torch.uint8)])  # Padding if needed
+            packed[i // 8 * 7 + 0] = (chunk[0] << 1) | (chunk[1] >> 6)
+            packed[i // 8 * 7 + 1] = ((chunk[1] & 0b111111) << 2) | (chunk[2] >> 5)
+            packed[i // 8 * 7 + 2] = ((chunk[2] & 0b11111) << 3) | (chunk[3] >> 4)
+            packed[i // 8 * 7 + 3] = ((chunk[3] & 0b1111) << 4) | (chunk[4] >> 3)
+            packed[i // 8 * 7 + 4] = ((chunk[4] & 0b111) << 5) | (chunk[5] >> 2)
+            packed[i // 8 * 7 + 5] = ((chunk[5] & 0b11) << 6) | (chunk[6] >> 1)
+            packed[i // 8 * 7 + 6] = ((chunk[6] & 0b1) << 7) | chunk[7]
+        return packed
+
+    if bits == 10:
+        # Group 4 values into 5 bytes (10 bits each)
+        packed = torch.zeros((t.numel() + 3) // 4 * 5, dtype=torch.uint8)
+        for i in range(0, t.numel(), 4):
+            chunk = t[i:i+4].to(torch.uint8)
+            chunk = torch.cat([chunk, torch.zeros(4 - len(chunk), dtype=torch.uint8)])  # Padding if needed
+            packed[i // 4 * 5 + 0] = chunk[0]
+            packed[i // 4 * 5 + 1] = (chunk[1] >> 2) | (chunk[0] << 8)
+            packed[i // 4 * 5 + 2] = (chunk[1] << 6) | (chunk[2] >> 4)
+            packed[i // 4 * 5 + 3] = (chunk[2] << 4) | (chunk[3] >> 6)
+            packed[i // 4 * 5 + 4] = chunk[3] << 2
+        return packed
+
+    if bits == 12:
+        # Group 2 values into 3 bytes (12 bits each)
+        packed = torch.zeros((t.numel() + 1) // 2 * 3, dtype=torch.uint8)
+        for i in range(0, t.numel(), 2):
+            chunk = t[i:i+2].to(torch.uint8)
+            chunk = torch.cat([chunk, torch.zeros(2 - len(chunk), dtype=torch.uint8)])  # Padding if needed
+            packed[i // 2 * 3 + 0] = chunk[0]
+            packed[i // 2 * 3 + 1] = (chunk[0] >> 4) | (chunk[1] << 4)
+            packed[i // 2 * 3 + 2] = chunk[1] >> 8
+        return packed
+
+    raise ValueError(f"bits must be one of 2, 3, 4, 5, 6, 7, 10, 12!")
+
+def quantize_to_qi8(tensor: torch.tensor) -> torch.tensor:
+    # Map [-1, 1] -> [0, 255]
+    x = torch.clamp(tensor, -1, 1)
+    x = ((x + 1.0) * 127.5).round()
+    q = x.clamp(0, 255).to(torch.uint8)
+    return q
+
+def dequantize_from_qi8(tensor: torch.tensor) -> torch.tensor:
+    if tensor.dtype != torch.uint8:
+        raise ValueError("Input tensor must be of dtype uint8")
+
+    # Map [0, 255] -> [-1, 1]
+    x = tensor.to(torch.float32)
+    return (x / 127.5) - 1.0
+
+def quantize_to_f4_e2m1(tensor: torch.tensor) -> torch.tensor:
     if tensor.dtype != torch.float32:
         raise ValueError("Input tensor must be of dtype float32")
 
@@ -146,9 +389,7 @@ def quantize_to_f4_e2m1(tensor):
     # Combine to form FP4
     fp4 = (sign_bit << 3) | (exponent_bits << 1) | mantissa
 
-    # Pack FP4 into int8 (two FP4 values per int8)
-    packed = (fp4[::2] << 4) | fp4[1::2]
-    return packed.to(torch.int8)
+    return pack_tensor(fp4, 4)
 
 def dequantize_from_f4_e2m1(packed_tensor):
     # Unpack int8 into two FP4 values each
@@ -170,8 +411,109 @@ def dequantize_from_f4_e2m1(packed_tensor):
     value = sign * (1 + mantissa) * (2 ** exponent)
     return value.to(torch.float32)
 
+def quantize_to_f6_e3m2(tensor):
+    if tensor.dtype != torch.float32:
+        raise ValueError("Input tensor must be of dtype float32")
 
-def load_weights(model_files, target_type: TensorType, metadata, tie_word_embeddings):
+    # Extract sign
+    sign_bit = (tensor < 0).to(torch.int32)
+    abs_tensor = torch.abs(tensor)
+
+    # Compute exponent (bias = 3) and clamp range
+    exponent = torch.floor(torch.log2(abs_tensor)).clamp(-3, 4)
+    exponent_bits = (exponent + 3).to(torch.int32)  # Add bias of 3
+
+    # Normalize and compute mantissa
+    normalized = abs_tensor / (2 ** exponent)
+    mantissa = ((normalized - 1.0) * 4).clamp(0, 3).to(torch.int32)  # 2 bits for mantissa
+
+    # Combine to form FP6 (1 sign bit | 3 exponent bits | 2 mantissa bits)
+    fp6 = (sign_bit << 5) | (exponent_bits << 2) | mantissa
+
+    # Pack FP6 values into 3 bytes (4 values per group)
+    # Group values in 4s
+    num_values = fp6.numel()
+    padded_size = (num_values + 3) // 4 * 4  # Ensure multiples of 4
+    fp6_padded = torch.cat([fp6, torch.zeros(padded_size - num_values, dtype=torch.int32)])
+
+    # Pack into bytes
+    packed = torch.zeros(padded_size // 4 * 3, dtype=torch.uint8)
+    print(f"packed shape: {packed.shape}, dtype: {packed.dtype}")
+    print(f"fp6_padded shape: {fp6_padded.shape}, dtype: {fp6_padded.dtype}")
+
+    fp6_padded_flat = fp6_padded.flatten()  # Flatten to 1D
+    for i in range(0, fp6_padded.numel(), 4):
+        packed[i // 4 * 3 + 0] = ((fp6_padded_flat[i + 0] << 2) | (fp6_padded_flat[i + 1] >> 4)).to(torch.uint8)
+        packed[i // 4 * 3 + 1] = (((fp6_padded_flat[i + 1] & 0xF) << 4) | (fp6_padded_flat[i + 2] >> 2)).to(torch.uint8)
+        packed[i // 4 * 3 + 2] = (((fp6_padded_flat[i + 2] & 0x3) << 6) | fp6_padded_flat[i + 3]).to(torch.uint8)
+    return packed
+
+def dequantize_from_f6_e3m2(packed_tensor):
+    # Unpack 3 bytes into 4 FP6 values
+    num_values = packed_tensor.numel() * 4 // 3
+    unpacked = torch.zeros(num_values, dtype=torch.int32)
+    for i in range(0, num_values, 4):
+        unpacked[i + 0] = (packed_tensor[i // 4 * 3 + 0] >> 2) & 0x3F
+        unpacked[i + 1] = ((packed_tensor[i // 4 * 3 + 0] & 0x3) << 4) | ((packed_tensor[i // 4 * 3 + 1] >> 4) & 0xF)
+        unpacked[i + 2] = ((packed_tensor[i // 4 * 3 + 1] & 0xF) << 2) | ((packed_tensor[i // 4 * 3 + 2] >> 6) & 0x3)
+        unpacked[i + 3] = packed_tensor[i // 4 * 3 + 2] & 0x3F
+
+    # Extract components
+    sign_bit = (unpacked >> 5) & 0b1
+    exponent_bits = (unpacked >> 2) & 0b111
+    mantissa_bits = unpacked & 0b11
+
+    # Decode values
+    sign = (-1) ** sign_bit
+    exponent = exponent_bits - 3  # Remove bias of 3
+    mantissa = mantissa_bits / 4
+    value = sign * (1 + mantissa) * (2 ** exponent)
+    return value.to(torch.float32)
+
+def translate_name(name: str):
+    if name == "model.embed_tokens.weight":
+        return "embed.weight"
+
+    if name == "model.norm.weight":
+        return "output.norm.weight"
+
+    if name == "lm_head.weight":
+        return "output.weight"
+
+    # model.layers.{l}.input_layernorm.weight -> model.layers.{l}.attn.norm.weight
+    name = name.replace("model.layers.", "l.")
+    # model.layers.{l}.self_attn.q_proj.weight
+    name = name.replace(".self_attn.q_proj.", ".attn.q.")
+    name = name.replace(".self_attn.k_proj.", ".attn.k.")
+    name = name.replace(".self_attn.v_proj.", ".attn.v.")
+    name = name.replace(".self_attn.o_proj.", ".attn.down.")
+    # model.layers.{l}.post_attention_layernorm.weight
+    name = name.replace(".post_attention_layernorm.", ".mlp.norm.")
+    # model.layers.{l}.input_layernorm.weight
+    name = name.replace(".input_layernorm.", ".attn.norm.")
+    # model.layers.{l}.mlp.gate_proj.weight
+    name = name.replace(".mlp.gate_proj.", ".mlp.gate.")
+    # model.layers.{l}.mlp.down_proj.weight
+    name = name.replace(".mlp.down_proj.", ".mlp.down.")
+    # model.layers.{l}.mlp.up_proj.weight
+    name = name.replace(".mlp.up_proj.", ".mlp.up.")
+
+    return name
+
+def fmt_number(value):
+    """
+    Converts a float or integer into a human-readable string with suffixes.
+    """
+    suffixes = ['','k', 'm', 'b', 't']  # Thousand, Million, Billion, Trillion
+    magnitude = 0
+
+    while abs(value) >= 1000 and magnitude < len(suffixes) - 1:
+        magnitude += 1
+        value /= 1000.0
+
+    return f"{value:.1f}{suffixes[magnitude]}"
+
+def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings) -> dict[str, torch.tensor]:
     """
     Load all weights from the model files in huggingface format into a dictionary of tensors,
     normalizing the attention weights, and casting all tensors (except for all layer norm weights,
@@ -206,59 +548,108 @@ def load_weights(model_files, target_type: TensorType, metadata, tie_word_embedd
 
     # convert weights
     progress = 0
-    def conv(name: str, t: torch.Tensor) -> torch.Tensor:
+    def conv(name: str):
         nonlocal progress
+
+        t: torch.tensor = weights[name]
+        conv_name: str = translate_name(name)
+
+        if conv_name.find("attn.q.weight") > 0:
+            t = permute_reverse(t, n_heads, rotary_dim)
+
+        if conv_name.find("attn.k.weight") > 0:
+            t = permute_reverse(t, n_kv_heads, rotary_dim)
+
         progress += 1
         actual_type = target_type
-        if name == "model.embed.weight" or name == "model.output.weight":
-            actual_type = TensorType.f16
+        if conv_name == "embed.weight" or conv_name == "output.weight":
+            actual_type = XType.f16
+
+        if len(t.shape) == 1:
+            actual_type = XType.f32
+
+        v_range = torch.max(t) - torch.min(t)
+        r_range = 16.0 / (torch.max(t, 0).values - torch.min(t, 0).values)
 
         if args.analyze:
-            print(f"{name}[{t.dtype}, range={torch.max(t) - torch.min(t):.4f}]", end="")
+            print(f"{conv_name}[{t.dtype}, range={v_range:.4f}]")
         else:
-            print(f"{name}: {t.dtype} => {actual_type}")
-
-        convt = actual_type.convert_to(t)
+            print(f"{name:<50}{str(t.dtype).replace("torch.", ""):<8} => {conv_name:<24}{actual_type:<12}")
 
         if args.analyze:
-            o = t.to(torch.float32)
-            q = convt.to(torch.float32)
-            mse = torch.mean((o * 1000 - q * 1000) ** 2)
-            normalized_error = torch.sum(torch.abs(o - q)) / torch.sum(torch.abs(o))
-            cos_sim = torch.cosine_similarity(o.view(-1).unsqueeze(0), q.view(-1).unsqueeze(0)).item()
-            snr = 10 * torch.log10(torch.sum(o ** 2) / torch.sum((o - q) ** 2))
-            accuracy = torch.mean((torch.abs(o - q) <= 0.00025).float()).item()
+            for test_type in XType:
+                if test_type == actual_type or name == "embed.weight":
+                    continue
+                if not test_type.do_analyze():
+                    continue
 
-            print(f" => {actual_type}: mse={mse:.2f}, norm_err_k={normalized_error:.2f}, cosine={cos_sim:.3f}, snr={snr:.2f}, accuracy={accuracy:.2f})")
+                if test_type == XType.f16 or test_type == XType.f32 or test_type == XType.bf16:
+                    scales = [1.0]
+                else:
+                    scales = [-1, 1.0, 8.0, 16.0, 1 / v_range * 4]
 
-        return convt
+                for scale in scales:
+                    o = t.to(torch.float32)
+
+                    if scale == -1:
+                        convt = XType.convert_to(t * r_range, test_type)
+                        q = XType.convert_to(convt, XType.f32, type_from=test_type) / r_range
+                    else:
+                        convt = XType.convert_to(t * scale, test_type)
+                        q = XType.convert_to(convt, XType.f32, type_from=test_type) / scale
+
+                    mse = torch.mean((o * 1000 - q * 1000) ** 2)
+                    normalized_error = torch.sum(torch.abs(o - q)) / torch.sum(torch.abs(o))
+                    cos_sim = torch.cosine_similarity(o.view(-1).unsqueeze(0), q.view(-1).unsqueeze(0)).item()
+                    snr = 10 * torch.log10(torch.sum(o ** 2) / torch.sum((o - q) ** 2))
+                    accuracy = torch.mean((torch.abs(o - q) <= 0.0001).float()).item()
+                    size_in_bytes = convt.element_size() * convt.nelement()
+
+                    print(f"=> {test_type.name():<12}scale={scale:<8.2f}size={fmt_number(size_in_bytes):<10}mse={mse:<8.2f}norm_err_k={normalized_error:<8.2f}cosine={cos_sim:<8.3f}snr={snr:<8.2f}accuracy={accuracy:<8.2f}")
+                print()
+            print()
+        else:
+            convt: torch.tensor = XType.convert_to(t, actual_type)
+            tensors[conv_name] = convt
+
+            storage = convt.untyped_storage()
+            data_ptr = storage.data_ptr()
+            nbytes = storage.nbytes()
+            raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
+
+            hash_value = xxhash.xxh64(raw_data)
+
+            metadata.tensors[conv_name] = {
+                "type": actual_type.name(),
+                "hash": hash_value.intdigest(),
+            }
 
     tensors = {}
 
-    tensors["model.embed.weight"] = conv("model.embed.weight", weights["model.embed_tokens.weight"])
+    conv("model.embed_tokens.weight")
 
     for l in range(config["num_hidden_layers"]):
-        tensors[f"model.layers.{l}.attn.norm.weight"] = weights[f"model.layers.{l}.input_layernorm.weight"].float()
+        conv(f"model.layers.{l}.input_layernorm.weight")
 
         rotary_dim = metadata.rotary_dim
         n_heads = metadata.n_heads
         n_kv_heads = metadata.n_kv_heads
 
-        tensors[f"model.layers.{l}.attn.wq.weight"] = conv(f"model.layers.{l}.attn.wq.weight", permute_reverse(weights[f"model.layers.{l}.self_attn.q_proj.weight"], n_heads, rotary_dim))
-        tensors[f"model.layers.{l}.attn.wk.weight"] = conv(f"model.layers.{l}.attn.wk.weight", permute_reverse(weights[f"model.layers.{l}.self_attn.k_proj.weight"], n_kv_heads, rotary_dim))
+        conv(f"model.layers.{l}.self_attn.q_proj.weight")
+        conv(f"model.layers.{l}.self_attn.k_proj.weight")
 
-        tensors[f"model.layers.{l}.attn.wv.weight"] = conv(f"model.layers.{l}.attn.wv.weight", weights[f"model.layers.{l}.self_attn.v_proj.weight"])
-        tensors[f"model.layers.{l}.attn.wo.weight"] = conv(f"model.layers.{l}.attn.wo.weight", weights[f"model.layers.{l}.self_attn.o_proj.weight"])
+        conv(f"model.layers.{l}.self_attn.v_proj.weight")
+        conv(f"model.layers.{l}.self_attn.o_proj.weight")
 
-        tensors[f"model.layers.{l}.mlp.norm.weight"] = weights[f"model.layers.{l}.post_attention_layernorm.weight"].float()
+        conv(f"model.layers.{l}.post_attention_layernorm.weight")
 
-        tensors[f"model.layers.{l}.mlp.w1.weight"] = conv(f"model.layers.{l}.mlp.w1.weight", weights[f"model.layers.{l}.mlp.gate_proj.weight"])
-        tensors[f"model.layers.{l}.mlp.w2.weight"] = conv(f"model.layers.{l}.mlp.w2.weight", weights[f"model.layers.{l}.mlp.down_proj.weight"])
-        tensors[f"model.layers.{l}.mlp.w3.weight"] = conv(f"model.layers.{l}.mlp.w3.weight", weights[f"model.layers.{l}.mlp.up_proj.weight"])
+        conv(f"model.layers.{l}.mlp.gate_proj.weight")
+        conv(f"model.layers.{l}.mlp.down_proj.weight")
+        conv(f"model.layers.{l}.mlp.up_proj.weight")
 
-    tensors["model.norm.weight"] = weights["model.norm.weight"].float()
+    conv("model.norm.weight")
     if not tie_word_embeddings:
-        tensors["model.output.weight"] = conv("model.output.weight", weights["lm_head.weight"])
+        conv("lm_head.weight")
 
     return tensors
 
@@ -385,63 +776,13 @@ def validate_files(file_paths: dict):
     print("All files downloaded and validated successfully!")
 
 
-def convert_tensor(original_tensor: torch.Tensor, dtype_str: str) -> torch.Tensor:
-    """
-    Convert tensor data to the target_dtype.
-    """
-
-    if original_tensor.device.type != "cpu":
-        raise ValueError(f"Tensor must be on cpu!")
-
-    converted_tensor: torch.Tensor
-
-    if dtype_str == "f32":
-        converted_tensor = original_tensor.to(torch.float32)
-    elif dtype_str == "f16":
-        converted_tensor = original_tensor.to(torch.float16)
-    elif dtype_str == 'f8.e4m3':
-        torchtype = getattr(torch, "float8_e4m3fn")
-        converted_tensor = original_tensor.to(torchtype)
-    elif dtype_str == 'f8.e5m2':
-        torchtype = getattr(torch, "float8_e5m2")
-        converted_tensor = original_tensor.to(torchtype)
-    elif dtype_str == "f4.e2m1":
-        converted_tensor = quantize_to_f4_e2m1(original_tensor)
-    else:
-        raise ValueError(f"Unsupported target dtype: {dtype_str}")
-
-    # print(f"Converted tensor: {converted_tensor}")
-    return converted_tensor
-
-        #
-        # converted = torch.empty(tensor.numel(), dtype=torch.uint8, device=tensor.device)
-        #
-        # chunk_size = max(1024, tensor.numel() // 128)  # At least 1MB or 1% of tensor size
-        #
-        # with tqdm(total=tensor.numel(), desc=f"Converting {name} {tuple(tensor.shape)}", unit="values") as progress:
-        #     for start in range(0, tensor.numel(), chunk_size):
-        #         end = min(start + chunk_size, tensor.numel())
-        #         chunk = tensor.flatten()[start:end]  # Flatten and slice the tensor
-        #         converted[start:end] = float32_to_f8_e4m3(chunk)  # Perform the conversion
-        #         progress.update(end - start)
-        #
-        # if tensor.numel() != converted.numel():
-        #     raise ValueError(f"Unexpected element count!")
-        #
-        # print(tensor.storage_type())
-        # print(converted.storage_type())find
-        #
-        # # Reshape to the original tensor shape
-        # return converted.reshape(tensor.shape)
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert model files with tokenizer and config, supporting URL input.")
 
     parser.add_argument("--input", type=str, help="Base URL/path with files.", required=True)
     parser.add_argument("--output", type=str, help="Output file path for the converted model.", default = "", required=False)
     parser.add_argument("--temp-dir", type=str, help="Temporary directory to store downloaded files.", default="./temp")
-    parser.add_argument("--type", type=str, default="f16", choices=TensorType.get_supported_types())
+    parser.add_argument("--type", type=str, default="f16", choices=XType.get_supported_types())
     parser.add_argument("--token", type=str, help="Hugging Face access token for private models.", required=False)
     parser.add_argument("--analyze", type=bool, nargs="?", const=True, help="Only analyze the input file.", default=False)
 
@@ -473,10 +814,12 @@ if __name__ == "__main__":
 
     with open(config_path, "r") as f:
         config = json.load(f)
-        metadata = Metadata(config, args.type)
+        metadata = Metadata(config)
 
+    print()
     tokens = load_tokens(tokenizer_path, metadata.vocab_size)
-    tensors = load_weights(model_weights, TensorType[args.type], metadata, config.get("tie_word_embeddings", None))
+    print()
+    tensors = load_weights(model_weights, XType.parse(args.type), metadata, config.get("tie_word_embeddings", None))
 
     # add tokenizer tensors at the end (to maximize the chance of model tensor alignment)
     # note: we concatenate all bytes of all tokens into a single tensor

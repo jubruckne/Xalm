@@ -140,7 +140,7 @@ void run_completion(
     encoding.size() / elapsed_s,
     elapsed_s / encoding.size(),
     (end_hydrate_ms - start_ms) / 1000.0,
-    ((double)read_bytes / 1e9) / elapsed_s,
+    (static_cast<double>(read_bytes) / 1e9) / elapsed_s,
     elapsed_s
   ) << std::endl;
 }
@@ -148,24 +148,25 @@ void run_completion(
 void run_test(const std::string& checkpoint_path) {
 	printf("test start\n");
 
-  YALMData model1, model2;
-
-  //model2.from_file("../models/mistral.fp8.xalm");
+  YALMData model1;
+  YALMData model2;
   model1.from_file("../models/mistral.xalm");
-
+  model2.from_file("../models/mistral.f8.xalm");
 
 
   std::print("\n*****\n");
-  std::print("{}", model1.format());
+  //std::print("{}", model1.format());
 
-  return;
-
-
-  Tensor ttt1 = model1.tensors.at("model.layers.9.mlp.w3.weight");
-  std::print("\n{}", ttt1.format(16, 0, 8, 8));
+  Tensor t1 = model1.tensors.at("model.layers.30.mlp.w3.weight");
+  Tensor t2 = model2.tensors.at("l.30.mlp.up.weight");
+  std::print("\n{}", t1.format(8, 8));
+  std::print("\n{}", t2.format(8, 8));
+  //std::print("\n{}", t1.format(16, 0, 8, 8));
 
   // Tensor ttt2 = model2.tensors.at("model.layers.0.attn.norm.weight");
   //std::printf("%s", ttt2.to_string(16).c_str());
+
+  return;
 
   Tensor a1 = Tensor::uniform(Type::F32, {4096*4, 4096}, 0, 1, "a");
 	Tensor b0 = Tensor::uniform(Type::F32, {4096*4, 4096}, 0, 1, "b0");
@@ -276,7 +277,7 @@ void run_perplexity(
     perplexity_error,
     N / elapsed_s,
     elapsed_s / N,
-    ((double)read_bytes / 1e9) / elapsed_s,
+    (static_cast<double>(read_bytes) / 1e9) / elapsed_s,
     elapsed_s
   ) << std::endl;
 }
@@ -343,7 +344,7 @@ void run_passkey(
   }
 
   // Allow max 16 steps to generate passkey
-  const size_t MAX_GENERATION_STEPS = 16;
+  constexpr size_t MAX_GENERATION_STEPS = 16;
 
   std::cout << fmt::format(
     "Passkey test:\n"
@@ -352,7 +353,7 @@ void run_passkey(
     "  passkey token index: ~{}\n",
     encoding.size(),
     passkey,
-    (int)(((float)pos) / n_junk * encoding.size())
+    static_cast<int>(static_cast<float>(pos) / n_junk * encoding.size())
   ) << std::endl;
 
   size_t N = encoding.size();

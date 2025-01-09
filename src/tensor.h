@@ -27,7 +27,7 @@ public:
 
   [[nodiscard]] std::string format(size_t show_rows = 8, size_t show_columns = 8, int groups_row = 1, int groups_col = 1) const;
 
-  int from_json(const std::string& name, const json& j, void* bytes_ptr, size_t bytes_size);
+  int from_json(const std::string& name, const json& val, void* bytes_ptr, size_t bytes_size);
 
 private:
   bool mem_owned = false;

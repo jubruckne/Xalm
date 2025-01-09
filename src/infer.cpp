@@ -7,27 +7,7 @@
 #include "profiler.h"
 #include "types.h"
 
-#if DEBUG_MODEL
-#include "fmt/format.h"
-static std::map<std::string, DebugTensor> _debug_map;
-std::map<std::string, DebugTensor>& debug_map_cpu() {
-  return _debug_map;
-}
-template <typename T>
-static std::vector<T> copy_debug_tensor(T* x, size_t size) {
-  std::vector<T> out(size);
-  for (size_t i = 0; i < size; i++) {
-    out[i] = x[i];
-  }
-  return out;
-}
-template <typename T>
-static void save_debug_tensor(const std::string& name, T* x, size_t size) {
-  _debug_map[name] = DebugTensor(copy_debug_tensor<T>(x, size));
-}
-#endif
-
-static void matmul(float* __restrict__ xout, const float* __restrict__ x, const float* __restrict__ w, const int n, const int d) {
+static void matmul(float* __restrict__ xout, const float* __restrict__ x, const float* __restrict__ w, const int n, const int d) noexcept {
   // W (d,n) @ x (n,) -> xout (d,)
   profile(std::format("{}x{}", n,d));
 
@@ -47,7 +27,23 @@ static void matmul(float* __restrict__ xout, const float* __restrict__ x, const 
   }
 }
 
-static void matmul(float* xout, const float* x, const float16_t* w, const int n, const int d) {
+template<int N, int D> requires (N % 16 == 0 && D % 16 == 0)
+static void matmul(float* xout, const float* x, const float16_t* w) noexcept {
+  // W (d,n) @ x (n,) -> xout (d,)
+  profile();
+
+  int i;
+#pragma omp parallel for private(i)
+  for (i = 0; i < D; i++) {
+    float val = 0.0f;
+    for (int j = 0; j < N; j++) {
+      val += w[i * N + j] * x[j];
+    }
+    xout[i] = val;
+  }
+}
+
+static void matmul(float* xout, const float* x, const float16_t* w, const int n, const int d) noexcept {
 	// W (d,n) @ x (n,) -> xout (d,)
   profile(std::format("{}x{}", n,d));
 
@@ -62,15 +58,16 @@ static void matmul(float* xout, const float* x, const float16_t* w, const int n,
 	}
 }
 
-static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e4m3_t* __restrict__ w, const int n, const int d) {
+
+static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e4m3_t* __restrict__ w, const int n, const int d) noexcept {
   // W (d,n) @ x (n,) -> xout (d,)
   profile(std::format("{}x{}", n,d));
 
   assert(n % 16 == 0);
   assert(d % 16 == 0);
-  assert(reinterpret_cast<uintptr_t>(xout) % 16 == 0);
-  assert(reinterpret_cast<uintptr_t>(x) % 16 == 0);
-  assert(reinterpret_cast<uintptr_t>(w) % 16 == 0);
+  assert(reinterpret_cast<uintptr_t>(xout) % 8 == 0);
+  assert(reinterpret_cast<uintptr_t>(x) % 8 == 0);
+  assert(reinterpret_cast<uintptr_t>(w) % 8 == 0);
 
   int i;
   int j;
@@ -85,18 +82,90 @@ static void matmul(float* __restrict__ xout, const float* __restrict__ x, const 
   }
 }
 
-void matmul(float* xout, const float* x, const Tensor* w, const int n, const int d) {
+template<int N, int D> requires (N % 16 == 0 && D % 16 == 0)
+static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e5m2_t* __restrict__ w) noexcept {
+  // W (d,n) @ x (n,) -> xout (d,)
+  profile();
+
+  assert(reinterpret_cast<uintptr_t>(xout) % 8 == 0);
+  assert(reinterpret_cast<uintptr_t>(x) % 8 == 0);
+  assert(reinterpret_cast<uintptr_t>(w) % 8 == 0);
+
+  int i;
+  int j;
+#pragma omp parallel for private(i)
+  for (i = 0; i < D; ++i) {
+    float val = 0.0f;
+    #pragma omp simd
+    for (j = 0; j < N; ++j) {
+      val += f8e5m2_t::to_float(w[i * N + j]) * x[j];
+    }
+    xout[i] = val;
+  }
+}
+
+static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e5m2_t* __restrict__ w, const int n, const int d)noexcept  {
+  // W (d,n) @ x (n,) -> xout (d,)
+  profile(std::format("{}x{}", n,d));
+
+  assert(n % 16 == 0);
+  assert(d % 16 == 0);
+  assert(reinterpret_cast<uintptr_t>(xout) % 8 == 0);
+  assert(reinterpret_cast<uintptr_t>(x) % 8 == 0);
+  assert(reinterpret_cast<uintptr_t>(w) % 8 == 0);
+
+  int i;
+  int j;
+#pragma omp parallel for private(i)
+  for (i = 0; i < d; i++) {
+    float val = 0.0f;
+#pragma omp simd
+    for (j = 0; j < n; j++) {
+      val += f8e5m2_t::to_float(w[i * n + j]) * x[j];
+    }
+    xout[i] = val;
+  }
+}
+
+void matmul(float* __restrict__ xout, const float* __restrict__ x, const Tensor* w, const int n, const int d) noexcept {
   switch (w->type) {
     case Type::F32: {
       matmul(xout, x, static_cast<const float*>(w->data), n, d);
       return;
     }
     case Type::F16: {
+      if (n == 4096 && d == 32000) {
+        matmul<4096,32000>(xout, x, static_cast<const float16_t*>(w->data));
+        return;
+      }
+
       matmul(xout, x, static_cast<const float16_t*>(w->data), n, d);
       return;
     }
     case Type::F8: {
       matmul(xout, x, static_cast<const f8e4m3_t*>(w->data), n, d);
+      return;
+    }
+    case Type::F8_E5M2: {
+      if (n == 4096 && d == 14336) {
+        matmul<4096,14336>(xout, x, static_cast<const f8e5m2_t*>(w->data));
+        return;
+      }
+      if (n == 14336 && d == 4096) {
+        matmul<14336, 4096>(xout, x, static_cast<const f8e5m2_t*>(w->data));
+        return;
+      }
+      if (n == 4096 && d == 4096) {
+        matmul<4096, 4096>(xout, x, static_cast<const f8e5m2_t*>(w->data));
+        return;
+      }
+      if (n == 4096 && d == 1024) {
+        matmul<4096, 1024>(xout, x, static_cast<const f8e5m2_t*>(w->data));
+        return;
+      }
+
+
+      matmul(xout, x, static_cast<const f8e5m2_t*>(w->data), n, d);
       return;
     }
     default: {
@@ -106,7 +175,7 @@ void matmul(float* xout, const float* x, const Tensor* w, const int n, const int
   }
 }
 
-void matmul(const Tensor& xout, const Tensor& a, const Tensor& b) {
+void matmul(const Tensor& xout, const Tensor& a, const Tensor& b) noexcept {
 	const auto n = a.shape[0];
 	const auto d = a.shape[1];
 	matmul(static_cast<float*>(xout.data), static_cast<const float*>(a.data), &b, n, d);
@@ -139,7 +208,7 @@ static void rmsnorm(float* o, const float* x, const float* weight, const int siz
     var += (x[i] - mean) * (x[i] - mean);
   }
   var /= size;
-  float scale = 1.0f / sqrtf(var + eps);
+  const float scale = 1.0f / sqrtf(var + eps);
   if (bias) {
     for (int i = 0; i < size; ++i) {
       o[i] = (x[i] - mean) * scale * weight[i] + bias[i];
@@ -152,10 +221,10 @@ static void rmsnorm(float* o, const float* x, const float* weight, const int siz
 }
 
 // Compute the softmax of an input vector `x` of length `size` and store it in `o`.
-static void softmax(float* o, float* x, int size) {
+static void softmax(float* __restrict__ o, const float* __restrict__ x, const int size) {
   profile();
 
-  float score_max = -FLT_MAX;
+  float score_max = std::numeric_limits<float>::lowest();
   for (int i = 0; i < size; ++i) {
     if (x[i] > score_max) {
       score_max = x[i];
@@ -171,31 +240,31 @@ static void softmax(float* o, float* x, int size) {
   }
 }
 
-inline float gelu(float x) {
+inline float gelu(const float x) {
   return 0.5f * x * (1.0f + tanhf(0.797885f * (x + 0.044715f * x * x * x)));
 }
 
-inline float silu(float x) {
+inline float silu(const float x) {
   return x / (1.0f + expf(-x));
 }
 
-inline float clip(float x, float v) {
+inline float clip(const float x, const float v) {
   return x < -v ? -v : (x > v ? v : x);
 }
 
 // TODO annotate me
-static void rope(float* vec, int d, int head_dim, int pos, float theta, int rotary_dim) {
+static void rope(float* vec, const int d, const int head_dim, const int pos, const float theta, const int rotary_dim) {
   profile();
 
   for (int i = 0; i < d; i += 2) {
-    int j_head = i % head_dim;
-    float freq = j_head >= rotary_dim ? 0.f : 1.0f / powf(theta, (float)j_head / (float)rotary_dim);
-    float val = pos * freq;
-    float fcr = cosf(val);
-    float fci = sinf(val);
+    const int j_head = i % head_dim;
+    const float freq = j_head >= rotary_dim ? 0.f : 1.0f / powf(theta, static_cast<float>(j_head) / static_cast<float>(rotary_dim));
+    const float val = pos * freq;
+    const float fcr = cosf(val);
+    const float fci = sinf(val);
 
-    float v0 = vec[i];
-    float v1 = vec[i + 1];
+    const float v0 = vec[i];
+    const float v1 = vec[i + 1];
     vec[i] = v0 * fcr - v1 * fci;
     vec[i + 1] = v0 * fci + v1 * fcr;
   }
@@ -208,19 +277,19 @@ void attn(
   float* qh,      // (head_dim,) - query vector for this head
   float16_t* kh,      // (kv_len, n_kv_heads, head_dim) - buffer containing key vectors of the sequence for all KV heads
   float16_t* vh,      // (kv_len, n_kv_heads, head_dim) - buffer containing value vectors of the sequence for all KV heads
-  int head_dim,   // size of the "key-space"
-  int n_kv_heads, // number of kv heads, can be < n_heads (1 is MultiQueryAttention, >1 is GroupedQueryAttention)
-  int kv_len      // number of tokens of the sequence we will attend over
+  const int head_dim,   // size of the "key-space"
+  const int n_kv_heads, // number of kv heads, can be < n_heads (1 is MultiQueryAttention, >1 is GroupedQueryAttention)
+  const int kv_len      // number of tokens of the sequence we will attend over
 ) {
-  int kv_stride = n_kv_heads * head_dim; // stride per token in this kv head
+  const int kv_stride = n_kv_heads * head_dim; // stride per token in this kv head
+  auto const sqrt_head_dim = 1.0f / sqrtf(head_dim);
   // calculate attention scores as dot products of q and k
   for (int t = 0; t < kv_len; ++t) {
     float score = 0.0f;
     for (int i = 0; i < head_dim; ++i) {
       score += qh[i] * kh[t * kv_stride + i];
     }
-    score /= sqrtf(head_dim);
-    atth[t] = score;
+    atth[t] = score * sqrt_head_dim;
   }
 
   // softmax the scores to get attention weights over [0..kv_len)
@@ -241,11 +310,11 @@ void attn(
 // - `s.x()` contains the input to the block. Output will also go here.
 // - Block KV cache is hydrated.
 void Block::_block_cpu(
-  InferenceState& s,  // inference state
-  int pos,            // index of the current token in the sequence
-  int kv_sink,        // number of sink tokens currently in the KV cache
-  int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
-  int kv_len          // number of tokens in the kv cache that we will attend over
+  const InferenceState& s,  // inference state
+  const int pos,            // index of the current token in the sequence
+  const int kv_sink,        // number of sink tokens currently in the KV cache
+  const int kv_pos,         // index of the current token in the kv cache, must be in [0..kv_len) since kv cache is a ring buffer
+  const int kv_len          // number of tokens in the kv cache that we will attend over
 ) const {
   profile();
 
@@ -261,8 +330,8 @@ void Block::_block_cpu(
     }
   }
 
-  int q_dim = c.n_heads * c.head_dim;
-  int kv_dim = c.n_kv_heads * c.head_dim;
+  const int q_dim = c.n_heads * c.head_dim;
+  const int kv_dim = c.n_kv_heads * c.head_dim;
 
   // qkv matmuls for this position
   matmul(s.q(), s.xb(), wq(), c.dim, q_dim);
@@ -308,7 +377,7 @@ void Block::_block_cpu(
   }
 
   // Multi-head attention. Iterate over all heads.
-  int q_per_kv_head = c.n_heads / c.n_kv_heads; // query heads per kv head (for MultiQueryAttention/GroupedQueryAttention)
+  const int q_per_kv_head = c.n_heads / c.n_kv_heads; // query heads per kv head (for MultiQueryAttention/GroupedQueryAttention)
   int h;
 #pragma omp parallel for private(h)
   for (h = 0; h < c.n_heads; h++) {
@@ -367,12 +436,12 @@ void mha_cpu(
   float16_t* kb,    // (max_seq_len, n_kv_heads, head_dim)
   float16_t* vb,    // (max_seq_len, n_kv_heads, head_dim)
   float* q,     // (n_heads, head_dim)
-  int head_dim, int kv_len, int max_seq_len, int n_heads, int n_kv_heads
+  const int head_dim, const int kv_len, const int max_seq_len, const int n_heads, const int n_kv_heads
 ) {
   profile();
 
   // Multihead attention. Iterate over all heads.
-  int q_per_kv_head = n_heads / n_kv_heads; // query heads per kv head (for MultiQueryAttention/GroupedQueryAttention)
+  const int q_per_kv_head = n_heads / n_kv_heads; // query heads per kv head (for MultiQueryAttention/GroupedQueryAttention)
   int h;
 #pragma omp parallel for private(h)
   for (h = 0; h < n_heads; h++) {
@@ -387,10 +456,10 @@ void mha_cpu(
 }
 
 void ffn_cpu(
-  float* xout, float* x, 
-  float* w1, float* w2, float* w3, 
-  int hidden_dim, int dim,
-  ActivationType act
+  float* xout, const float* x,
+  const float* w1, const float* w2, const float* w3,
+  const int hidden_dim, const int dim,
+  const ActivationType act
 ) {
   profile();
 
@@ -454,7 +523,7 @@ void Model::_copy_embedding(const InferenceState& s, const int token) const {
   }
 }
 
-void Model::_forward_cpu(InferenceState& s, const int token, const int pos, const InferenceMode mode) const {
+void Model::_forward_cpu(const InferenceState& s, const int token, const int pos, const InferenceMode mode) const {
   const Config& c = *config;
 
   // copy the token embedding into `x`
@@ -463,9 +532,9 @@ void Model::_forward_cpu(InferenceState& s, const int token, const int pos, cons
   // When decoding past the context length, keep the first few tokens in the KV cache
   // untouched as "attention sinks" while replacing the rest in ring order.
   // See StreamingLLM (https://arxiv.org/pdf/2309.17453) for more.
-  int kv_sink = pos >= c.max_seq_len ? KV_SINKS : 0;
-  int kv_pos = kv_sink + (pos - kv_sink) % (c.max_seq_len - kv_sink);
-  int kv_len = pos >= c.max_seq_len ? c.max_seq_len : pos + 1;
+  const int kv_sink = pos >= c.max_seq_len ? KV_SINKS : 0;
+  const int kv_pos = kv_sink + (pos - kv_sink) % (c.max_seq_len - kv_sink);
+  const int kv_len = pos >= c.max_seq_len ? c.max_seq_len : pos + 1;
 
   // forward all layers in order
   for (const auto& b : blocks) {

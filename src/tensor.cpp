@@ -11,7 +11,7 @@
 
 #include "types.h"
 
-size_t Tensor::calculate_size(Type type, const std::vector<int> &shape) {
+size_t Tensor::calculate_size(const Type type, const std::vector<int> &shape) {
   size_t num_elements = 1;
   for (const int dim : shape) {
     if (dim == 0) break;
@@ -20,14 +20,14 @@ size_t Tensor::calculate_size(Type type, const std::vector<int> &shape) {
   return num_elements * (type.bit_size / 8);
 }
 
-Tensor Tensor::view(void* data, size_t size, Type type, const std::vector<int> &shape, const std::string& name) {
+Tensor Tensor::view(void* data, const size_t size, const Type type, const std::vector<int> &shape, const std::string& name) {
   if (const size_t expected_size = calculate_size(type, shape); size != expected_size) {
     throw std::invalid_argument("External data size does not match expected size for the given shape and type.");
   }
   return Tensor(name, type, shape, data, size, false);
 }
 
-Tensor Tensor::zeroes(Type type, const std::vector<int> &shape, const std::string &name) {
+Tensor Tensor::zeroes(const Type type, const std::vector<int> &shape, const std::string &name) {
   const size_t size = calculate_size(type, shape);
   void* ptr = std::aligned_alloc(16, size);
   if (!ptr) {
@@ -37,7 +37,7 @@ Tensor Tensor::zeroes(Type type, const std::vector<int> &shape, const std::strin
   return Tensor(name, type, shape, ptr, size, true);
 }
 
-Tensor Tensor::uniform(Type type, const std::vector<int> &shape, const float min, const float max, const std::string& name) {
+Tensor Tensor::uniform(const Type type, const std::vector<int> &shape, const float min, const float max, const std::string& name) {
   auto t = Tensor::zeroes(type, shape, name);
 
   std::default_random_engine generator(42);
@@ -114,7 +114,7 @@ Tensor::Tensor(std::string name, const Type type, const std::vector<int> &shape,
   this->data = data;
 }
 
-int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr, size_t bytes_size) {
+int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr, const size_t bytes_size) {
   this->name = name;
 
   const std::string dtype_str = val.value("dtype", "");
@@ -126,19 +126,21 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
     this->type = Type::U8;
   } else if (dtype_str == "F8_E4M3") {
     this->type = Type::F8;
+  } else if (dtype_str == "F8_E5M2") {
+    this->type = Type::F8_E5M2;
   } else {;
     throw std::invalid_argument(std::format("bad dtype {}", dtype_str));
   }
+
   const size_t dsize = this->type.bit_size / 8;
 
   size_t numel = 1;
   rank = val.at("shape").size();
   if (rank > 4) {
-    std::print("shape exceeds 4 dimensions");
-    throw std::bad_alloc();
-  } else {
-    shape.resize(rank);
+    throw std::invalid_argument("shape exceeds 4 dimensions");
   }
+
+  shape.resize(rank);
 
   for (size_t i = 0; i < rank && i < 4; i++) {
     if (val.at("shape")[i].get<int>() != val.at("shape")[i]) {
@@ -155,8 +157,7 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   const auto offset_start = static_cast<size_t>(val.at("data_offsets")[0]);
   const auto offset_end = static_cast<size_t>(val.at("data_offsets")[1]);
   if (offset_start < 0 || offset_end <= offset_start || offset_end > bytes_size) {
-    std::printf("bad offsets");
-    throw std::bad_alloc();
+    throw std::invalid_argument(std::format("offset out of range"));
   }
   this->data = static_cast<char*>(bytes_ptr) + offset_start;
 
@@ -168,26 +169,36 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   constexpr int need_align = 1;
   #endif
 
-  std::printf("[%s] type=%s", name.c_str(), dtype_str.c_str());
+  // std::printf("[%s] type=%s", name.c_str(), dtype_str.c_str());
+  this->size = offset_end - offset_start;
 
-  if (reinterpret_cast<uintptr_t>(this->data) % need_align != 0) {
-    std::printf(" alignment to %i", need_align);
+  auto get_alignment = [](void* ptr) -> int {
+    if (reinterpret_cast<uintptr_t>(ptr) % 128 == 0) return 128;
+    if (reinterpret_cast<uintptr_t>(ptr) % 64 == 0) return 64;
+    if (reinterpret_cast<uintptr_t>(ptr) % 32 == 0) return 32;
+    if (reinterpret_cast<uintptr_t>(ptr) % 16 == 0) return 16;
+    if (reinterpret_cast<uintptr_t>(ptr) % 8 == 0) return 8;
+    if (reinterpret_cast<uintptr_t>(ptr) % 4 == 0) return 4;
+    if (reinterpret_cast<uintptr_t>(ptr) % 2 == 0) return 2;
+    return 1;
+  };
 
+  if (get_alignment(this->data) < need_align) {
     void* aligned_data = std::aligned_alloc(need_align, size);
     if (!aligned_data) {
-      throw std::bad_alloc();
+      throw std::invalid_argument(std::format("{}: failed to allocate buffer of size {}:{}!", this->name, size, need_align));
     }
     std::memcpy(aligned_data, this->data, this->size);
     this->data = aligned_data;
+    std::print("{}: aligned to {}...\n", this->name, need_align);
   }
 
-  this->size = offset_end - offset_start;
   // validate the shape matches the size
   if (numel * dsize != this->size) {
     throw std::invalid_argument(std::format("bad size! {}: {} * {} = {}, expected {}", dtype_str, numel, dsize, numel * dsize, this->size));
   }
 
-  std::printf(" loaded.\n");
+  // std::printf(" loaded.\n");
 
   return 0;
 }
@@ -206,7 +217,7 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
     tbl.add(row_number++, key, std::string(tensor.type.name()), tensor.shape, tensor.size);;
   }
 
-  return tbl.format(filename, 6);
+  return tbl.format(filename);
 }
 
 int YALMData::from_file(const std::string& filename) {
@@ -214,7 +225,7 @@ int YALMData::from_file(const std::string& filename) {
   std::cout << "loading data from file: " << filename << std::endl;
   int fd = open(filename.c_str(), O_RDONLY);
   if (fd == -1) {
-    return -1;
+    throw std::invalid_argument(std::format("failed to open file {}", filename));
   }
 
   struct stat st;
@@ -242,13 +253,13 @@ int YALMData::from_file(const std::string& filename) {
   // Parse the metadata JSON and the tensors
   if (size < sizeof(uint64_t)) {
     munmap(data, size);
-    return -1;
+    throw std::invalid_argument(std::format("bad size: {}", size));
   }
 
   const uint64_t json_size = *static_cast<uint64_t*>(data);
   if (json_size == 0 || json_size > size - sizeof(uint64_t)) {
     munmap(data, size);
-    return -1;
+    throw std::invalid_argument(std::format("bad size: {}", size));
   }
 
   void* bytes_ptr = static_cast<char*>(data) + sizeof(uint64_t) + json_size;
@@ -256,6 +267,9 @@ int YALMData::from_file(const std::string& filename) {
 
   const std::string json_string(static_cast<char*>(data) + sizeof(uint64_t), json_size);
   const json header = json::parse(json_string);
+
+  //std::print("{}", json_string);
+  //std::flush(std::cout);
 
   for (auto& [key, val] : header.items()) {
     if (key == "__metadata__") {
@@ -293,12 +307,14 @@ std::string Tensor::format(size_t show_rows, size_t show_columns, int groups_row
   }
   shape_str += "]";
 
-  return table::make(
-      column<std::array<double, 3>>{"Coordinates"},
-      column<int>{"ID"}
-  ).format();
+ /* auto tbl = table::make(
+    column<int>{"#", -1, alignment::left, "{}", false},
+    column<std::string>{"name", -1, alignment::left, "{}", true},
+    column<std::string>{"type", -1, alignment::center, "{}", true},
+    column<std::array<int, 2>>{"shape", -1, alignment::right, "{h}", true},
+    column<size_t>{"size", -1, alignment::right, "{h}"}
+  );*/
 
-  /*
   auto extra_columns = {"min", "max", "mean", "std", "unique"};
 
   int column_width = 9;
@@ -346,7 +362,7 @@ std::string Tensor::format(size_t show_rows, size_t show_columns, int groups_row
 
     if (column.show) {
       output += std::format("{:>{}}", std::format("col {}", col), column_width);
-    } else if (col > 0) {
+    } else if (col == show_columns) {
       output += std::format("{:>{}}", "...", 3);
     }
 
@@ -399,26 +415,6 @@ std::string Tensor::format(size_t show_rows, size_t show_columns, int groups_row
       output += std::format("{:>{}}", " ", 3);
     }
 
-    for (std::string c: extra_columns) {
-      if (c == "mean") {
-        output += std::format("{:>{}.4f}", col_stats.sum / static_cast<float>(num_columns), column_width);
-      } else if (c == "std") {
-        output += std::format("{:>{}.4f}", static_cast<float>(666), column_width);
-      } else if (c == "min") {
-        output += std::format("{:>{}.4f}", col_stats.min, column_width);
-      } else if (c == "max") {
-        output += std::format("{:>{}.4f}", col_stats.max, column_width);
-      } else if (c == "sum") {
-        output += std::format("{:>{}.4f}", col_stats.sum, column_width);
-      } else if (c == "sum_abs") {
-        output += std::format("{:>{}.4f}", col_stats.sum_abs, column_width);
-      } else if (c == "unique") {
-        output += std::format("{:>{}}", col_stats.unique_values.size(), column_width);
-      } else {
-        throw std::invalid_argument(std::format("unknown column {}", c));
-      }
-    }
-
     output += "\n";
   }
 
@@ -452,7 +448,6 @@ std::string Tensor::format(size_t show_rows, size_t show_columns, int groups_row
   }
 
   return output;
-*/
 }
 
 /*

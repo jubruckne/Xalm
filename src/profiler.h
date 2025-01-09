@@ -1,6 +1,5 @@
 #pragma once
 
-#include <vector>
 #include <string>
 #include <unordered_map>
 #include <chrono>
@@ -12,17 +11,22 @@
 #define profile(...) Profiler __scoped_profiler(std::source_location::current(), ##__VA_ARGS__)
 
 class Profiler {
+  using clk = std::chrono::high_resolution_clock;
 public:
-  Profiler(const std::source_location& location = std::source_location::current(),
-    const std::string& params = "")
+  explicit Profiler(const std::source_location& location = std::source_location::current(),
+    const std::string& params = std::string()) noexcept
       : functionName(location.function_name()), parameters(params),
-        startTime(std::chrono::high_resolution_clock::now()) {
-    // std::printf("[%s]\n", functionName.c_str());
+        startTime(clk::now()) {
   }
 
-  ~Profiler() {
-    const auto endTime = std::chrono::high_resolution_clock::now();
-    const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(endTime - startTime).count();
+  Profiler(const Profiler &other) = delete;
+  Profiler(Profiler &&other) noexcept = delete;
+  Profiler & operator=(const Profiler &other) = delete;
+  Profiler & operator=(Profiler &&other) noexcept = delete;
+
+  ~Profiler() noexcept {
+    const auto endTime = clk::now();
+    const auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime).count();
     record(functionName + "<" + parameters + ">", duration);
   }
 
@@ -39,14 +43,14 @@ public:
       std::printf("%-64s %12i %12.0f\n",
                   cleanedName.c_str(),
                   stats.callCount,
-                  static_cast<double>(stats.totalTime) / 1000.0);
+                  static_cast<double>(stats.totalTime));
     }
   }
 
 private:
-  std::string functionName;
-  std::string parameters;
-  std::chrono::time_point<std::chrono::high_resolution_clock> startTime;
+  const std::string functionName;
+  const std::string parameters;
+  std::chrono::time_point<clk> startTime;
 
   struct ProfileStats {
     long long totalTime = 0;
@@ -56,20 +60,10 @@ private:
   static inline std::unordered_map<std::string, ProfileStats> profileData;
   static inline std::mutex dataMutex;
 
-  static void record(const std::string& functionName, const long long duration) {
+  static void record(const std::string& functionName, const long long duration) noexcept {
     std::lock_guard lock(dataMutex);
     auto&[totalTime, callCount] = profileData[functionName];
     totalTime += duration;
     callCount += 1;
   }
-};
-
-struct BinaryDumper {
-  // Save T array to binary file
-  template <typename T>
-  static bool save(const std::string& filename, const T* data, size_t count);
-  
-  // Load T array from binary file
-  template <typename T>
-  static std::vector<T> load(const std::string& filename);
 };
