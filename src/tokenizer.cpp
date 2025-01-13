@@ -1,8 +1,32 @@
 #include "tokenizer.h"
+#include <sstream>
+
+static std::vector<int> parse_str(const std::string& input) {
+  std::vector<int> result;
+
+  if (!input.empty() && input.front() == '[' && input.back() == ']') {
+    // Remove brackets
+    std::string trimmed = input.substr(1, input.size() - 2);
+
+    // Split by commas
+    std::stringstream ss(trimmed);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+      result.push_back(std::stoi(token));
+    }
+  } else {
+    result.push_back(std::stoi(input));
+  }
+  return result;
+}
 
 Tokenizer::Tokenizer(const YALMData& data) {
-  this->bos_id = std::stoi(data.metadata.at("bos_token_id").get<std::string>());
-  this->eos_id = std::stoi(data.metadata.at("eos_token_id").get<std::string>());
+  auto bos = data.metadata.at("bos_token_id").get<std::string>();
+  auto eos = data.metadata.at("eos_token_id").get<std::string>();
+
+  this->bos_id = parse_str(bos)[0];
+  this->eos_id = parse_str(eos)[0];
+
   // TODO: figure out edge cases:
   // Q: should `vocab` include byte fallback tokens?
   // Q: should `vocab` include special tokens, e.g. '<unk>', '<s>', '</s>'?

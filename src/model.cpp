@@ -49,6 +49,8 @@ void Config::from_yalm(YALMData& yalm, const int context) {
   }
 
   qkv_clip = yalm.metadata.contains("qkv_clip") ? std::stof(yalm.metadata.at("qkv_clip").get<std::string>()) : FLT_MAX;
+
+  tie_word_embeddings = yalm.metadata.at("tie_word_embeddings").get<std::string>() == "True";
 }
 
 size_t Config::active_bytes(const size_t pos) const {
@@ -240,7 +242,12 @@ Model::Model(YALMData& yalm, const int context) {
   }
 
   rms_final_weight = get_tensor(yalm, "output.norm.weight", {config->dim});
-  wcls = get_tensor(yalm, "output.weight", {config->vocab_size, config->dim});
+
+  if (config->tie_word_embeddings) {
+    wcls = token_embedding_table;
+  } else {
+    wcls = get_tensor(yalm, "output.weight", {config->vocab_size, config->dim});
+  }
 }
 
 void Model::forward(const InferenceState& s, const int token, const int pos, const InferenceMode mode) const {

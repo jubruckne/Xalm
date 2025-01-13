@@ -7,7 +7,7 @@
 #include "profiler.h"
 #include "types.h"
 
-static void matmul(float* __restrict__ xout, const float* __restrict__ x, const float* __restrict__ w, const int n, const int d) noexcept {
+[[maybe_unused]] static void matmul(float* __restrict__ xout, const float* __restrict__ x, const float* __restrict__ w, const int n, const int d) noexcept {
   // W (d,n) @ x (n,) -> xout (d,)
   profile(std::format("{}x{}", n,d));
 
@@ -27,23 +27,7 @@ static void matmul(float* __restrict__ xout, const float* __restrict__ x, const 
   }
 }
 
-template<int N, int D> requires (N % 16 == 0 && D % 16 == 0)
-static void matmul(float* xout, const float* x, const float16_t* w) noexcept {
-  // W (d,n) @ x (n,) -> xout (d,)
-  profile();
-
-  int i;
-#pragma omp parallel for private(i)
-  for (i = 0; i < D; i++) {
-    float val = 0.0f;
-    for (int j = 0; j < N; j++) {
-      val += w[i * N + j] * x[j];
-    }
-    xout[i] = val;
-  }
-}
-
-static void matmul(float* xout, const float* x, const float16_t* w, const int n, const int d) noexcept {
+[[maybe_unused]] static void matmul(float* xout, const float* x, const float16_t* w, const int n, const int d) noexcept {
 	// W (d,n) @ x (n,) -> xout (d,)
   profile(std::format("{}x{}", n,d));
 
@@ -58,8 +42,58 @@ static void matmul(float* xout, const float* x, const float16_t* w, const int n,
 	}
 }
 
+template<typename T> constexpr T dynamic = -1;
+template<typename T> consteval bool is_dynamic(const T value) {
+  return value == dynamic<T>;
+}
 
-static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e4m3_t* __restrict__ w, const int n, const int d) noexcept {
+template <typename> consteval std::string_view type_name() { return "void"; }
+template <> consteval std::string_view type_name<float32_t>() { return "float32_t"; }
+template <> consteval std::string_view type_name<float16_t>() { return "float16_t"; }
+template <> consteval std::string_view type_name<bfloat16_t>() { return "bfloat16_t"; }
+template <> consteval std::string_view type_name<f8e4m3_t>() { return "f8e4m3_t"; }
+template <> consteval std::string_view type_name<f8e5m2_t>() { return "f8e5m2_t"; }
+
+template <typename T>
+concept NativeTypes = std::is_same_v<T, float32_t>
+              || std::is_same_v<T, float16_t>;
+
+template <typename T>
+concept AllowedTypes = std::is_same_v<T, float32_t>
+              || std::is_same_v<T, float16_t>
+              || std::is_same_v<T, f8e5m2_t>
+              || std::is_same_v<T, f8e4m3_t>;
+
+template <AllowedTypes T, int N = dynamic<int>, int D = dynamic<int>>
+static void matmul(float* __restrict__ xout, const float* __restrict__ x, const T* __restrict__ w, const int n = N, const int d = D) noexcept {
+  // W (d,n) @ x (n,) -> xout (d,)
+  profile(std::format("matmul(float*, float*, {}, {}, {})", type_name<T>(), n, d));
+
+  assert(n % 16 == 0);
+  assert(d % 16 == 0);
+  assert(reinterpret_cast<uintptr_t>(xout) % 8 == 0);
+  assert(reinterpret_cast<uintptr_t>(x) % 8 == 0);
+  assert(reinterpret_cast<uintptr_t>(w) % 8 == 0);
+
+  int i;
+  int j;
+#pragma omp parallel for private(i)
+  for (i = 0; i < d; i++) {
+    float val = 0.0f;
+#pragma omp simd
+    for (j = 0; j < n; j++) {
+      if constexpr(std::is_same<T, float32_t>() || std::is_same<T, float16_t>()) {
+        val += w[i * n + j] * x[j];
+      } else {
+        val += T::to_float(w[i * n + j]) * x[j];
+      }
+    }
+    xout[i] = val;
+  }
+}
+
+
+[[maybe_unused]] static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e4m3_t* __restrict__ w, const int n, const int d) noexcept {
   // W (d,n) @ x (n,) -> xout (d,)
   profile(std::format("{}x{}", n,d));
 
@@ -82,29 +116,7 @@ static void matmul(float* __restrict__ xout, const float* __restrict__ x, const 
   }
 }
 
-template<int N, int D> requires (N % 16 == 0 && D % 16 == 0)
-static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e5m2_t* __restrict__ w) noexcept {
-  // W (d,n) @ x (n,) -> xout (d,)
-  profile();
-
-  assert(reinterpret_cast<uintptr_t>(xout) % 8 == 0);
-  assert(reinterpret_cast<uintptr_t>(x) % 8 == 0);
-  assert(reinterpret_cast<uintptr_t>(w) % 8 == 0);
-
-  int i;
-  int j;
-#pragma omp parallel for private(i)
-  for (i = 0; i < D; ++i) {
-    float val = 0.0f;
-    #pragma omp simd
-    for (j = 0; j < N; ++j) {
-      val += f8e5m2_t::to_float(w[i * N + j]) * x[j];
-    }
-    xout[i] = val;
-  }
-}
-
-static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e5m2_t* __restrict__ w, const int n, const int d)noexcept  {
+[[maybe_unused]] static void matmul(float* __restrict__ xout, const float* __restrict__ x, const f8e5m2_t* __restrict__ w, const int n, const int d)noexcept  {
   // W (d,n) @ x (n,) -> xout (d,)
   profile(std::format("{}x{}", n,d));
 
@@ -130,42 +142,19 @@ static void matmul(float* __restrict__ xout, const float* __restrict__ x, const 
 void matmul(float* __restrict__ xout, const float* __restrict__ x, const Tensor* w, const int n, const int d) noexcept {
   switch (w->type) {
     case Type::F32: {
-      matmul(xout, x, static_cast<const float*>(w->data), n, d);
+      matmul<float32_t>(xout, x, static_cast<const float32_t*>(w->data), n, d);
       return;
     }
     case Type::F16: {
-      if (n == 4096 && d == 32000) {
-        matmul<4096,32000>(xout, x, static_cast<const float16_t*>(w->data));
-        return;
-      }
-
-      matmul(xout, x, static_cast<const float16_t*>(w->data), n, d);
+      matmul<float16_t>(xout, x, static_cast<const float16_t*>(w->data), n, d);
       return;
     }
-    case Type::F8: {
-      matmul(xout, x, static_cast<const f8e4m3_t*>(w->data), n, d);
+    case Type::F8_E4M3: {
+      matmul<f8e4m3_t>(xout, x, static_cast<const f8e4m3_t*>(w->data), n, d);
       return;
     }
     case Type::F8_E5M2: {
-      if (n == 4096 && d == 14336) {
-        matmul<4096,14336>(xout, x, static_cast<const f8e5m2_t*>(w->data));
-        return;
-      }
-      if (n == 14336 && d == 4096) {
-        matmul<14336, 4096>(xout, x, static_cast<const f8e5m2_t*>(w->data));
-        return;
-      }
-      if (n == 4096 && d == 4096) {
-        matmul<4096, 4096>(xout, x, static_cast<const f8e5m2_t*>(w->data));
-        return;
-      }
-      if (n == 4096 && d == 1024) {
-        matmul<4096, 1024>(xout, x, static_cast<const f8e5m2_t*>(w->data));
-        return;
-      }
-
-
-      matmul(xout, x, static_cast<const f8e5m2_t*>(w->data), n, d);
+      matmul<f8e5m2_t>(xout, x, static_cast<const f8e5m2_t*>(w->data), n, d);
       return;
     }
     default: {
@@ -328,6 +317,9 @@ void Block::_block_cpu(
       rmsnorm(s.xb(), s.x(), static_cast<const float *>(rms_att_weight()->data), c.dim, c.norm_eps);
       break;
     }
+    default: {
+      assert(false && "unsupported activation type");
+    }
   }
 
   const int q_dim = c.n_heads * c.head_dim;
@@ -347,32 +339,37 @@ void Block::_block_cpu(
     s.v()[i] = clip(s.v()[i], c.qkv_clip);
   }
 
-  // RoPE relative positional encoding: complex-valued rotate q and k in each head
-  rope(s.q(), q_dim, c.head_dim, pos, c.rope_theta, c.rotary_dim);
-  rope(s.k(), kv_dim, c.head_dim, pos, c.rope_theta, c.rotary_dim);
-  
   // key and value point to the kv cache
   float16_t* kb = key_cache();
   float16_t* vb = value_cache();
-  // update kv cache
-  for (int i = 0; i < kv_dim; ++i) {
-    kb[kv_pos * kv_dim + i] = s.k()[i];
-    vb[kv_pos * kv_dim + i] = s.v()[i];
-  }
 
-  // Sink tokens remain untouched while the rest of the KV cache is incrementally 
-  // replaced in ring order, but sink i must always be positioned (max_seq_len - i)
-  // away from current timestep. Hence, each forward pass, rotate sink tokens 
-  // forward by 1. See https://arxiv.org/abs/2309.17453 for more.
-  for (int r = 0; r < kv_sink; r++) {
+  {
+    profile("rope");
+    // RoPE relative positional encoding: complex-valued rotate q and k in each head
+    rope(s.q(), q_dim, c.head_dim, pos, c.rope_theta, c.rotary_dim);
+    rope(s.k(), kv_dim, c.head_dim, pos, c.rope_theta, c.rotary_dim);
+
+    // update kv cache
     for (int i = 0; i < kv_dim; ++i) {
-      s.k()[i] = kb[r * kv_dim + i];
+      kb[kv_pos * kv_dim + i] = s.k()[i];
+      vb[kv_pos * kv_dim + i] = s.v()[i];
     }
 
-    rope(s.k(), kv_dim, c.head_dim, 1, c.rope_theta, c.rotary_dim);
+    // Sink tokens remain untouched while the rest of the KV cache is incrementally
+    // replaced in ring order, but sink i must always be positioned (max_seq_len - i)
+    // away from current timestep. Hence, each forward pass, rotate sink tokens
+    // forward by 1. See https://arxiv.org/abs/2309.17453 for more.
 
-    for (int i = 0; i < kv_dim; i++) {
-      kb[r * kv_dim + i] = s.k()[i];
+    for (int r = 0; r < kv_sink; r++) {
+      for (int i = 0; i < kv_dim; ++i) {
+        s.k()[i] = kb[r * kv_dim + i];
+      }
+
+      rope(s.k(), kv_dim, c.head_dim, 1, c.rope_theta, c.rotary_dim);
+
+      for (int i = 0; i < kv_dim; i++) {
+        kb[r * kv_dim + i] = s.k()[i];
+      }
     }
   }
 
@@ -402,31 +399,43 @@ void Block::_block_cpu(
       rmsnorm(s.xb(), s.x(), static_cast<const float *>(rms_ffn_weight()->data), c.dim, c.norm_eps);
       break;
     }
-  }
-
-  // mix self.w2(F.silu(self.w1(x)) * self.w3(x))
-  // Note this is a feedforward with a GLU, not a simple MLP.
-  matmul(s.hb(), s.xb(), w1(), c.dim, c.hidden_dim);
-  matmul(s.hb2(), s.xb(), w3(), c.dim, c.hidden_dim);
-  switch (c.act) {
-    case ActivationType::GELU: {
-      for (int i = 0; i < c.hidden_dim; ++i) {
-        s.hb()[i] = gelu(s.hb()[i]) * s.hb2()[i];
-      }
-      break;
-    }
-    case ActivationType::SILU: {
-      for (int i = 0; i < c.hidden_dim; ++i) {
-        s.hb()[i] = silu(s.hb()[i]) * s.hb2()[i];
-      }
-      break;
+    default: {
+      assert(false && "unsupported norm type");
     }
   }
 
-  matmul(s.xb2(), s.hb(), w2(), c.hidden_dim, c.dim);
-  // residual connection back into x
-  for (int i = 0; i < c.dim; ++i) {
-    s.x()[i] += s.xb2()[i];
+  {
+    profile("mlp");
+    // mix self.w2(F.silu(self.w1(x)) * self.w3(x))
+    // Note this is a feedforward with a GLU, not a simple MLP.
+    matmul(s.hb(), s.xb(), w1(), c.dim, c.hidden_dim);
+    matmul(s.hb2(), s.xb(), w3(), c.dim, c.hidden_dim);
+    {
+      profile("mlp_act");
+      switch (c.act) {
+        case ActivationType::GELU: {
+          for (int i = 0; i < c.hidden_dim; ++i) {
+            s.hb()[i] = gelu(s.hb()[i]) * s.hb2()[i];
+          }
+          break;
+        }
+        case ActivationType::SILU: {
+          for (int i = 0; i < c.hidden_dim; ++i) {
+            s.hb()[i] = silu(s.hb()[i]) * s.hb2()[i];
+          }
+          break;
+        }
+        default: {
+          assert(false && "unsupported activation type");
+        }
+      }
+    }
+
+    matmul(s.xb2(), s.hb(), w2(), c.hidden_dim, c.dim);
+    // residual connection back into x
+    for (int i = 0; i < c.dim; ++i) {
+      s.x()[i] += s.xb2()[i];
+    }
   }
 }
 
@@ -482,6 +491,9 @@ void ffn_cpu(
       }
       break;
     }
+    default: {
+      assert(false && "unsupported activation type");
+    }
   }
 
   matmul(xout, hb, w2, hidden_dim, dim);
@@ -510,7 +522,7 @@ void Model::_copy_embedding(const InferenceState& s, const int token) const {
       }
       break;
     }
-    case Type::F8: {
+    case Type::F8_E4M3: {
       const auto* emb = static_cast<f8e4m3_t*>(token_embedding_table->data);
       for (int i = 0; i < c.dim; ++i) {
         s.x()[i] = f8e4m3_t::to_float(emb[token * c.dim + i]);
@@ -552,6 +564,9 @@ void Model::_forward_cpu(const InferenceState& s, const int token, const int pos
       assert(rms_final_weight->type == Type::F32);
       rmsnorm(s.x(), s.x(), static_cast<const float *>(rms_final_weight->data), c.dim, c.norm_eps);
       break;
+    }
+    default: {
+      assert(false && "unsupported norm type");
     }
   }
 

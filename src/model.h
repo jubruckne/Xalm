@@ -37,6 +37,7 @@ struct Config {
   ActivationType act;       // activation function
   LayerNormType norm_type;  // norm type
   float qkv_clip;           // clip qkv values to [-clip, clip]
+  bool tie_word_embeddings; // tie input and output embeddings
 
   // Data type of the weights according to config, used
   // to safety check tensor dtype at initialization time.

@@ -14,7 +14,7 @@ from enum import Enum
 from urllib.parse import urljoin
 
 import xxhash
-from torch.onnx.utils import unpack_quantized_tensor
+from torch.fx.experimental.unification.multipledispatch.utils import typename
 
 from quants import quantize as gguf_quantize, dequantize as gguf_dequantize, GGMLQuantizationType
 import requests
@@ -24,7 +24,8 @@ import torch
 from tqdm import tqdm
 
 SUPPORTED_ARCHITECTURES = [
-    "MistralForCausalLM"
+    "MistralForCausalLM",
+    "LlamaForCausalLM"
 ]
 
 class XTensor:
@@ -178,7 +179,7 @@ class Metadata:
         if arch not in SUPPORTED_ARCHITECTURES:
             raise Exception(f"Architecture {arch} is not supported, must be one of {SUPPORTED_ARCHITECTURES}")
         self.arch = arch
-        if arch == "MistralForCausalLM":
+        if arch == "MistralForCausalLM" or arch == "LlamaForCausalLM":
             self.dim = config["hidden_size"]
             self.hidden_dim = config["intermediate_size"]
             self.head_dim = config.get("head_dim", config["hidden_size"] // config["num_attention_heads"])
@@ -193,15 +194,18 @@ class Metadata:
             self.rotary_dim = int(self.head_dim * config.get("partial_rotary_factor", 1))
             self.norm_eps = config["rms_norm_eps"]
             self.norm_type = "rmsnorm"
+            self.tie_word_embeddings = config["tie_word_embeddings"]
 
             assert config["hidden_act"] in ["gelu", "silu"]
             self.act_type = config["hidden_act"]
 
             self.tensors = {}
+        else:
+            raise Exception(f"unexpected Architecture: {arch}!")
 
     def to_dict(self):
         result = {"arch": self.arch}
-        if self.arch == "MistralForCausalLM":
+        if self.arch == "MistralForCausalLM" or self.arch == "LlamaForCausalLM":
             result["dim"] = str(self.dim)
             result["hidden_dim"] = str(self.hidden_dim)
             result["head_dim"] = str(self.head_dim)
@@ -217,13 +221,38 @@ class Metadata:
             result["norm_eps"] = str(self.norm_eps)
             result["norm_type"] = str(self.norm_type)
             result["act_type"] = str(self.act_type)
-            result["tensors"] = str(self.tensors)
+            result["tie_word_embeddings"] = str(self.tie_word_embeddings)
+
+
+        result["tensors"] = str(self.tensors)
+
+        if len(str(result)) % 32 != 0:
+            result["padding"] = ""
+            while len(str(result)) % 32 != 0:
+                result["padding"] += chr(64 + (32 - (len(str(result)) % 32)))
         return result
 
+# this is a horrible gpt-2 unicode byte encoder hack from https://github.com/openai/gpt-2/blob/master/src/encoder.py#L9
+# this has poisoned all HF tokenizer configs that use ByteLevel decoder/preprocessor
+# as a result we get crazy UTF-8-as-bytes-as-UTF8 in the tokenizer data that we need to convert back
+def gpt2_bytes_to_unicode():
+    bs = list(range(ord("!"), ord("~")+1))+list(range(ord("¡"), ord("¬")+1))+list(range(ord("®"), ord("ÿ")+1))
+    cs = bs[:]
+    n = 0
+    for b in range(2**8):
+        if b not in bs:
+            bs.append(b)
+            cs.append(2**8+n)
+            n += 1
+    cs = [chr(n) for n in cs]
+    return dict(zip(bs, cs))
+
 def load_tokens(tokenizer_path, vocab_size):
+    print(f"Loading tokenizer from {tokenizer_path}")
     tokens = [""] * vocab_size
     with open(tokenizer_path, "r") as f:
         tokenizer = json.load(f)
+    use_gpt2_byte_preprocessing = not tokenizer["model"].get("byte_fallback", False)
 
     vocab = tokenizer["model"]["vocab"]
     assert len(vocab) <= vocab_size
@@ -234,10 +263,14 @@ def load_tokens(tokenizer_path, vocab_size):
     for added in tokenizer["added_tokens"]:
         tokens[added["id"]] = added["content"]
 
+    gpt2_decode = {v: k for k, v in gpt2_bytes_to_unicode().items()}
     # Preprocess tokens into UTF-8 encoding
     for i, t in enumerate(tokens):
-        t = t.replace('\u2581', ' ') # sentencepiece uses this character as whitespace
-        b = t.encode('utf-8')
+        if use_gpt2_byte_preprocessing:
+            b = bytes([gpt2_decode.get(c, 0) for c in t])
+        else:
+            t = t.replace('\u2581', ' ') # sentencepiece uses this character as whitespace
+            b = t.encode('utf-8')
         b = b.replace(b"\0", b"\7") # replace null bytes with bell characters
         assert b.count(0) == 0 # no null bytes allowed
         tokens[i] = b
@@ -653,11 +686,19 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
 
     return tensors
 
-def download_file(url: str, output_path: str, token: str = None):
+def download_file(url: str, output_path: str, token: str = None, overwrite: bool = False) -> bool:
     """
     Download a file from the given URL and save it to the specified path with a progress bar.
     """
-    print(f"Starting download: {url}")
+
+    if os.path.exists(output_path):
+        if overwrite:
+            os.remove(output_path)
+        else:
+            print(f"downloading {url}...{output_path} already exists, skipping.")
+            return True
+
+    print(f"downloading {url}...")
 
     headers = {}
     if token:
@@ -679,159 +720,151 @@ def download_file(url: str, output_path: str, token: str = None):
                     f.write(chunk)
                     bar.update(len(chunk))
         print(f"Saved to {output_path}")
+        return True
     else:
-        raise Exception(f"Failed to download {url}. HTTP Status: {response.status_code}")
+        print(f"Failed to download {url}. HTTP Status: {response.status_code}")
+        return False
+
+def process_input(input_path: str) -> (str, str, []):
+    model_files = {}
+
+    config_file = None
+    tokenizer_file = None
+    model_files = []
+
+    if os.path.exists(os.path.join(input_path, "config.json")):
+        config_file = os.path.join(input_path, "config.json")
+        print(f"using {config_file}")
+    else:
+        raise FileNotFoundError("config.json not found")
+
+    if os.path.exists(os.path.join(input_path, "tokenizer.json")):
+        tokenizer_file = os.path.join(input_path, "tokenizer.json")
+        print(f"using {tokenizer_file}")
+    else:
+        raise FileNotFoundError("tokenizer.json not found")
+
+    if os.path.exists(os.path.join(input_path, "model.safetensors")):
+        model_files.append(os.path.join(input_path, "model.safetensors"))
+        print(f"using {model_files}")
+    else:
+        files_to_process = [
+            "model-00001-of-00003.safetensors",
+            "model-00002-of-00003.safetensors",
+            "model-00003-of-00003.safetensors"
+        ]
+        for st_f in files_to_process:
+            if os.path.exists(os.path.join(input_path, st_f)):
+                model_files.append(os.path.join(input_path, st_f))
+        print(f"using {model_files}")
+        if len(model_files) == 0:
+            raise FileNotFoundError("no model files found!")
+
+    return config_file, tokenizer_file, model_files
 
 
-def download_model_files(base_url: str, output_dir: str):
-    """
-    Download model weights, tokenizer, and configuration files from a base URL.
-
-    Args:
-        base_url (str): The base URL hosting the model files.
-        output_dir (str): Local directory to save the downloaded files.
-
-    Returns:
-        dict: Paths to the downloaded model files.
-    """
-    files_to_download = [
-        "tokenizer.json",        # Tokenizer file
-        "config.json",           # Model configuration
-        "model-00001-of-00003.safetensors",  # Example weights part 1
-        "model-00002-of-00003.safetensors",  # Example weights part 2
-        "model-00003-of-00003.safetensors",  # Example weights part 3
-    ]
+def download_model(url: str, token: str = None) -> dict:
+    # Download files from URL
+    # https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2/raw/main/tokenizer.json
+    # https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2/resolve/main/model-00001-of-00003.safetensors
 
     downloaded_files = {}
-    os.makedirs(output_dir, exist_ok=True)
+    if not(url.startswith("http://") or url.startswith("https://")):
+        raise Exception(f"Invalid URL: {url}")
 
-    for file_name in files_to_download:
-        file_url = urljoin(base_url, file_name)
-        file_path = os.path.join(output_dir, file_name)
-        download_file(file_url, file_path)
-        downloaded_files[file_name] = file_path
+    print(f"Download model from: {url}...")
+    model_name = url.strip("/").split("/")[-1]
+    print(f"Model name: {model_name}...")
+
+    temp_dir = os.path.join("./", model_name)
+
+    os.makedirs(temp_dir, exist_ok=True)
+
+    # model config
+    config_file = "config.json"
+    config_url = urljoin(url + "raw/main/", config_file)
+    config_path = os.path.join(temp_dir, config_file)
+
+    if download_file(config_url, config_path, token):
+        downloaded_files[config_file] = config_path
+    else:
+        raise Exception(f"Failed to download {config_url}.")
+
+    # tokenizer
+    tokenizer_file = "tokenizer.json"
+    tokenizer_url = urljoin(url + "resolve/main/", tokenizer_file)
+    tokenizer_path = os.path.join(temp_dir, tokenizer_file)
+
+    if download_file(tokenizer_url, tokenizer_path, token):
+        downloaded_files[tokenizer_file] = tokenizer_path
+    else:
+        raise Exception(f"Failed to download {tokenizer_url}.")
+
+    safetensors_file = "model.safetensors"
+    safetensors_url = urljoin(url + "resolve/main/", safetensors_file)
+    safetensors_path = os.path.join(temp_dir, safetensors_file)
+
+    if download_file(safetensors_url, safetensors_path, token):
+        downloaded_files[safetensors_file] = safetensors_path
+    else:
+        for safetensors_file in ["model-00001-of-00003.safetensors", "model-00002-of-00003.safetensors", "model-00003-of-00003.safetensors"]:
+            safetensors_url = urljoin(url + "resolve/main/", tokenizer_file)
+            safetensors_path = os.path.join(temp_dir, tokenizer_file)
+            if download_file(safetensors_url, safetensors_path, token):
+                downloaded_files[safetensors_file] = safetensors_path
+            else:
+                raise Exception(f"Failed to download {safetensors_file}.")
 
     return downloaded_files
-
-def process_input(input_path: str, temp_dir: str, token: str = None) -> dict:
-    """
-    Process the input parameter: if it's a URL, download files; otherwise, directly use local files.
-
-    Args:
-        input_path (str): URL or local path.
-        temp_dir (str): temporary directory to save the downloaded files.
-
-    Returns:
-        dict: Paths to the processed model files.
-    """
-    files_to_process = [
-        "tokenizer.json",        # Tokenizer file
-        "config.json",           # Model configuration
-        "model-00001-of-00003.safetensors",  # Example weights part 1
-        "model-00002-of-00003.safetensors",  # Example weights part 2
-        "model-00003-of-00003.safetensors",  # Example weights part 3
-    ]
-
-    processed_files = {}
-    if input_path.startswith("http://") or input_path.startswith("https://"):
-        # Download files from URL
-        # https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2/raw/main/tokenizer.json
-        # https://huggingface.co/mistralai/Mistral-7B-Instruct-v0.2/resolve/main/model-00001-of-00003.safetensors
-
-        os.makedirs(temp_dir, exist_ok=True)
-        for file_name in files_to_process:
-            if file_name == "tokenizer.json" or file_name == "config.json":
-                file_url = urljoin(input_path + "raw/main/", file_name)
-            else:
-                file_url = urljoin(input_path + "resolve/main/", file_name)
-
-            file_path = os.path.join(temp_dir, file_name)
-            download_file(file_url, file_path, token)
-            processed_files[file_name] = file_path
-    else:
-        # Use local files without copying
-        for file_name in files_to_process:
-            source_path = os.path.join(input_path, file_name)
-            if os.path.exists(source_path):
-                print(f"Using local file: {source_path}")
-                processed_files[file_name] = source_path
-            else:
-                raise Exception(f"Missing required file: {source_path}")
-
-    return processed_files
-
-def validate_files(file_paths: dict):
-    """
-    Ensure all required files were downloaded successfully.
-
-    Args:
-        file_paths (dict): Dictionary of expected files and their paths.
-
-    Raises:
-        Exception: If any file is missing.
-    """
-    for name, path in file_paths.items():
-        if not os.path.exists(path):
-            raise Exception(f"Missing required file: {name} at {path}")
-    print("All files downloaded and validated successfully!")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert model files with tokenizer and config, supporting URL input.")
 
-    parser.add_argument("--input", type=str, help="Base URL/path with files.", required=True)
-    parser.add_argument("--output", type=str, help="Output file path for the converted model.", default = "", required=False)
-    parser.add_argument("--temp-dir", type=str, help="Temporary directory to store downloaded files.", default="./temp")
+    parser.add_argument("--download", type=str, help="Base URL to download from huggingface.", required=False)
+    parser.add_argument("--input", type=str, help="Base URL/path with files.", required=False)
+    parser.add_argument("--output", type=str, help="Output file path for the converted model.", required=False)
     parser.add_argument("--type", type=str, default="f16", choices=XType.get_supported_types())
-    parser.add_argument("--token", type=str, help="Hugging Face access token for private models.", required=False)
+    parser.add_argument("--token", type=str, default=os.environ.get("HF_TOKEN"), help="Hugging Face access token for private models.", required=False)
     parser.add_argument("--analyze", type=bool, nargs="?", const=True, help="Only analyze the input file.", default=False)
 
     args = parser.parse_args()
 
-    if args.output == "":
+    if not args.download is None:
+        files = download_model(args.download, args.token)
+        print(f"Downloaded {files.values()}")
+        exit(0)
+
+    print(f"torch version: {torch.__version__}")
+
+    if not args.input is None:
+        if args.output is None or args.output == "":
+            args.output = os.path.join("./", args.input.strip("/").split("/")[-1] + f".{args.type}.xalm")
+        config_file, tokenizer_file, model_files = process_input(args.input)
+
+        with open(config_file, "r") as f:
+            config = json.load(f)
+            metadata = Metadata(config)
+
+        print()
+        tokens = load_tokens(tokenizer_file, metadata.vocab_size)
+        print()
+        tensors = load_weights(model_files, XType.parse(args.type), metadata, config.get("tie_word_embeddings", None))
+
+        # add tokenizer tensors at the end (to maximize the chance of model tensor alignment)
+        # note: we concatenate all bytes of all tokens into a single tensor
+        tensors["tokenizer.tokens"] = torch.cat([torch.tensor([x for x in b] + [0], dtype=torch.uint8) for b in tokens])
+
         if not args.analyze:
-            print(f"--output must be specified!")
-            sys.exit(1)
+            print(f"Saving {len(tensors)} tensors...")
+            for k, v in tensors.items():
+                assert v.layout == torch.strided and v.is_contiguous()
 
-    try:
-        print("Processing input...")
-        processed_files = process_input(args.input, args.temp_dir, args.token)
-        validate_files(processed_files)
-    except Exception as e:
-        print(f"Error processing input: {e}")
-        sys.exit(1)
+            save_file(tensors, args.output, metadata.to_dict())
 
-    print(torch.__version__)
+            print(f"saved to {args.output}")
 
-    model_weights = [processed_files[f"model-0000{i}-of-00003.safetensors"] for i in range(1, 4)]
-    tokenizer_path = processed_files["tokenizer.json"]
-    config_path = processed_files["config.json"]
+        sys.exit(0)
 
-    # Placeholder for conversion logic
-    print(f"Using config: {config_path}")
-    print(f"Using tokenizer: {tokenizer_path}")
-    print(f"Using weights: {model_weights}")
-
-    with open(config_path, "r") as f:
-        config = json.load(f)
-        metadata = Metadata(config)
-
-    print()
-    tokens = load_tokens(tokenizer_path, metadata.vocab_size)
-    print()
-    tensors = load_weights(model_weights, XType.parse(args.type), metadata, config.get("tie_word_embeddings", None))
-
-    # add tokenizer tensors at the end (to maximize the chance of model tensor alignment)
-    # note: we concatenate all bytes of all tokens into a single tensor
-    tensors["tokenizer.tokens"] = torch.cat([torch.tensor([x for x in b] + [0], dtype=torch.uint8) for b in tokens])
-
-    if not args.analyze:
-        print(f"Saving {len(tensors)} tensors...")
-        for k, v in tensors.items():
-            assert v.layout == torch.strided and v.is_contiguous()
-
-        save_file(tensors, args.output, metadata.to_dict())
-
-        print(f"saved to {args.output}")
-
-    print("Done!")
+    print("no task!")
+    sys.exit(1)

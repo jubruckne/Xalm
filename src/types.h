@@ -196,7 +196,7 @@ struct Type {
   static const Type Unknown;
   static const Type F32;
   static const Type F16;
-  static const Type F8;
+  static const Type F8_E4M3;
   static const Type F8_E5M2;
   static const Type U8;
   static const Type QI4;
@@ -213,7 +213,7 @@ struct Type {
   [[nodiscard]] constexpr std::string_view name() const {
     if (*this == Type::F32) return "F32";
     if (*this == Type::F16) return "F16";
-    if (*this == Type::F8) return "F8";
+    if (*this == Type::F8_E4M3) return "F8_E4M3";
     if (*this == Type::F8_E5M2) return "F8_E5M2";
     if (*this == Type::U8) return "U8";
     if (*this == Type::QI4) return "QF4";
@@ -223,7 +223,7 @@ struct Type {
   [[nodiscard]] constexpr size_t byte_offset(const std::size_t offset) const {
     if (*this == Type::F32) return offset * sizeof(float32_t);
     if (*this == Type::F16) return offset * sizeof(float16_t);
-    if (*this == Type::F8) return offset * sizeof(uint8_t);
+    if (*this == Type::F8_E4M3) return offset * sizeof(uint8_t);
     if (*this == Type::F8_E5M2) return offset * sizeof(uint8_t);
     if (*this == Type::U8) return offset * sizeof(uint8_t);
     if (*this == Type::QI4) return offset * sizeof(uint8_t) / 2;
@@ -240,7 +240,7 @@ struct Type {
 
     if (id == Type::F32.id) return *static_cast<const float32_t*>(d);
     if (id == Type::F16.id) return *static_cast<const float16_t*>(d);
-    if (id == Type::F8.id) return f8e4m3_t::to_float(*static_cast<const f8e4m3_t*>(d));
+    if (id == Type::F8_E4M3.id) return f8e4m3_t::to_float(*static_cast<const f8e4m3_t*>(d));
     if (id == Type::F8_E5M2.id) return f8e5m2_t::to_float(*static_cast<const f8e5m2_t*>(d));
 
     return 666.66f;
@@ -258,8 +258,7 @@ struct Type {
 
     if (type_str == "F32") return Type::F32;
     if (type_str == "F16") return Type::F16;
-    if (type_str == "F8") return Type::F8;
-    if (type_str == "F8.E4M3") return Type::F8;
+    if (type_str == "F8.E4M3") return Type::F8_E4M3;
     if (type_str == "F8.E5M2") return Type::F8_E5M2;
     if (type_str == "U8") return Type::U8;
     if (type_str == "QF4") return Type::QI4;
@@ -278,7 +277,7 @@ struct Type {
 constexpr Type Type::Unknown{0, 0};
 constexpr Type Type::F32{1, sizeof(uint32_t) * 8};
 constexpr Type Type::F16{2, sizeof(uint16_t) * 8};
-constexpr Type Type::F8{3, sizeof(uint8_t) * 8};
+constexpr Type Type::F8_E4M3{3, sizeof(uint8_t) * 8};
 constexpr Type Type::F8_E5M2{4, sizeof(uint8_t) * 8};
 constexpr Type Type::U8{5, sizeof(uint8_t) * 8};
 constexpr Type Type::QI4{6, sizeof(uint8_t) * 4};

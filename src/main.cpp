@@ -171,7 +171,7 @@ void run_test(const std::string& checkpoint_path) {
   Tensor a1 = Tensor::uniform(Type::F32, {4096*4, 4096}, 0, 1, "a");
 	Tensor b0 = Tensor::uniform(Type::F32, {4096*4, 4096}, 0, 1, "b0");
 	Tensor b1 = Tensor::uniform(Type::F16, {4096*4, 4096}, 0, 1, "b1");
-	Tensor b2 = Tensor::uniform(Type::F8, {4096*4, 4096}, 0, 1, "b2");
+	Tensor b2 = Tensor::uniform(Type::F8_E4M3, {4096*4, 4096}, 0, 1, "b2");
 	Tensor out1 = Tensor::zeroes(Type::F32, {4096*4, 4096}, "out");
 
   printf("%s: size: %zu, length: %zu\n", a1.name.c_str(), a1.size, a1.linear_length);

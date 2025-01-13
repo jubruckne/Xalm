@@ -58,7 +58,7 @@ Tensor Tensor::uniform(const Type type, const std::vector<int> &shape, const flo
       }
       break;
     }
-    case Type::F8: {
+    case Type::F8_E4M3: {
       auto* ptr = static_cast<f8e4m3_t*>(t.data);
       for (size_t i = 0; i < t.linear_length; ++i) {
         ptr[i] = f8e4m3_t::from(distribution(generator));
@@ -125,7 +125,7 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   } else if (dtype_str == "U8") {
     this->type = Type::U8;
   } else if (dtype_str == "F8_E4M3") {
-    this->type = Type::F8;
+    this->type = Type::F8_E4M3;
   } else if (dtype_str == "F8_E5M2") {
     this->type = Type::F8_E5M2;
   } else {;
@@ -184,13 +184,14 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   };
 
   if (get_alignment(this->data) < need_align) {
-    void* aligned_data = std::aligned_alloc(need_align, size);
+    std::print("{}: realign {} to {}...\n", this->name, get_alignment(this->data), need_align);
+
+    void* aligned_data = std::aligned_alloc(need_align, (size / 16 + 1) * 16);
     if (!aligned_data) {
       throw std::invalid_argument(std::format("{}: failed to allocate buffer of size {}:{}!", this->name, size, need_align));
     }
     std::memcpy(aligned_data, this->data, this->size);
     this->data = aligned_data;
-    std::print("{}: aligned to {}...\n", this->name, need_align);
   }
 
   // validate the shape matches the size
@@ -268,8 +269,8 @@ int YALMData::from_file(const std::string& filename) {
   const std::string json_string(static_cast<char*>(data) + sizeof(uint64_t), json_size);
   const json header = json::parse(json_string);
 
-  //std::print("{}", json_string);
-  //std::flush(std::cout);
+  // std::print("{}", json_string);
+  // std::flush(std::cout);
 
   for (auto& [key, val] : header.items()) {
     if (key == "__metadata__") {
