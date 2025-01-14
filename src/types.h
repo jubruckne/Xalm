@@ -4,6 +4,7 @@
 
 #if defined(__AVX2__) && defined(__F16C__)
   #include <immintrin.h> // Intel/AVX2
+  using float16_t = __fp16;
 #elif defined(__ARM_NEON) || defined(__aarch64__)
   #include <arm_neon.h>  // ARM NEON
 #endif
