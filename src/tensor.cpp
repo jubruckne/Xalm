@@ -183,14 +183,14 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
 
   for (size_t i = 0; i < rank && i < 4; i++) {
     if (val.at("shape")[i].get<int>() != val.at("shape")[i]) {
-      std::print("bad shape");
+      std::print("{}","bad shape");
       throw std::bad_alloc();
     }
     shape[i] = val.at("shape")[i].get<int>();
     numel *= shape[i];
   }
   if (val.at("data_offsets").size() != 2) {
-    std::printf("bad offsets");
+    std::print("{}", "bad offsets");
     throw std::bad_alloc();
   }
   const auto offset_start = static_cast<size_t>(val.at("data_offsets")[0]);

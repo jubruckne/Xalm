@@ -156,7 +156,6 @@ void run_test(const std::string& checkpoint_path) {
   model2.from_file("../models/mistral.f8.xalm");
 
 
-  std::print("\n*****\n");
   //std::print("{}", model1.format());
 
   Tensor t1 = model1.tensors.at("model.layers.30.mlp.w3.weight");

@@ -11,7 +11,7 @@ VENDOR_DIR := vendor
 ASM_DIR := $(BUILD)/asm
 BIN_DIR := .
 
-CFLAGS := -g -Wall -Wpointer-arith -march=native -O3 -Werror -I$(VENDOR_DIR) -std=c++23 -fcolor-diagnostics
+CFLAGS := -g -Wall -Wpointer-arith -march=native -O3 -Werror -I$(VENDOR_DIR) -std=c++23
 LDFLAGS := -lm
 
 ifeq ($(UNAME), Darwin)	# MAC OS
@@ -19,7 +19,7 @@ ifeq ($(UNAME), Darwin)	# MAC OS
     LDFLAGS += -lomp -L /opt/homebrew/opt/libomp/lib
 else # LINUX
     LDFLAGS += -fopenmp
-    CFLAGS += -stdlib=libc++ -mf16c -mavx2 -mfma
+    CFLAGS += -mf16c -mavx2 -mfma -stdlib=libstdc++
 endif
 
 # compile .c, .cpp, .cu files
