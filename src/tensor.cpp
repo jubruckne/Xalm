@@ -6,10 +6,49 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <unordered_set>
 #include "table.h"
-
 #include "types.h"
+
+template <typename... Indices>
+size_t Tensor::flatten_indices(Indices... indices) const requires (std::unsigned_integral<Indices> && ...) {
+  static_assert(sizeof...(indices) > 0, "At least one index must be provided.");
+  if (sizeof...(indices) >= rank) {
+    throw std::invalid_argument("Number of indices does not match tensor rank.");
+  }
+
+  std::array<size_t, sizeof...(indices)> indices_ = {static_cast<size_t>(indices)...};
+
+  size_t offset = 0;
+  size_t stride = 1;
+
+  for (int i = rank - 1; i >= 0; --i) {
+    if (indices_[i] >= shape[i]) {
+      throw std::out_of_range("Index out of bounds.");
+    }
+    offset += indices_[i] * stride;
+    stride *= shape[i];
+  }
+  return offset;
+}
+
+template<typename ... Indices> requires (std::unsigned_integral<Indices> && ...)
+const float & Tensor::operator[](Indices... indices) const {
+  auto idx = flatten_indices(indices...);
+  return type.get_float(data, idx);
+}
+
+template <typename... Indices> requires (std::unsigned_integral<Indices> && ...)
+std::vector<float32_t> Tensor::get_row(Indices... indices) const {
+  if (sizeof...(indices) != rank - 1) {
+    throw std::invalid_argument("Number of indices does must match rank - 1!");
+  }
+  auto idx = flatten_indices(indices...);
+  auto values = std::vector<float32_t>(shape[rank - 1]);
+  for (size_t i = 0; i < shape[rank - 1]; ++i) {
+    values[i] = type.get_float(data, idx);
+  }
+  return values;
+}
 
 size_t Tensor::calculate_size(const Type type, const std::vector<int> &shape) {
   size_t num_elements = 1;
@@ -164,7 +203,7 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   #if defined(__AVX__) || defined(__AVX2__)
   constexpr int need_align = 32;
   #elif defined(__ARM_NEON)
-  constexpr int need_align = 16;
+  constexpr int need_align = std::alignment_of_v<float32x4_t>;
   #else
   constexpr int need_align = 1;
   #endif
@@ -183,7 +222,7 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
     return 1;
   };
 
-  if (get_alignment(this->data) < need_align) {
+  if (false && get_alignment(this->data) < need_align) {
     std::print("{}: realign {} to {}...\n", this->name, get_alignment(this->data), need_align);
 
     void* aligned_data = std::aligned_alloc(need_align, (size / 16 + 1) * 16);
@@ -220,6 +259,8 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
 
   return tbl.format(filename);
 }
+
+
 
 int YALMData::from_file(const std::string& filename) {
   this->filename = filename;
@@ -290,7 +331,7 @@ int YALMData::from_file(const std::string& filename) {
   return 0;
 }
 
-std::string Tensor::format(size_t show_rows, size_t show_columns, int groups_row, int groups_col) const {
+std::string Tensor::format(size_t show_rows, size_t show_columns) const {
   if (!data) {
     return "Error: Tensor data is null.";
   }
@@ -308,14 +349,31 @@ std::string Tensor::format(size_t show_rows, size_t show_columns, int groups_row
   }
   shape_str += "]";
 
- /* auto tbl = table::make(
-    column<int>{"#", -1, alignment::left, "{}", false},
-    column<std::string>{"name", -1, alignment::left, "{}", true},
-    column<std::string>{"type", -1, alignment::center, "{}", true},
-    column<std::array<int, 2>>{"shape", -1, alignment::right, "{h}", true},
-    column<size_t>{"size", -1, alignment::right, "{h}"}
-  );*/
+  auto tbl = table::make(
+    column<size_t>{"row", -1, alignment::left, "{}", true},
+    column<std::array<float32_t, 10>>{"col", -1, alignment::right, "{:.3f}", true},
+    column<float32_t>{"sum", -1, alignment::right, "{:.3f}", false},
+    column<float32_t>{"mean", -1, alignment::right, "{:.3f}", false},
+    column<float32_t>{"min", -1, alignment::right, "{:.3f}", false},
+    column<float32_t>{"max", -1, alignment::right, "{:.3f}", false}
+    );
 
+  [[maybe_unused]] const size_t num_columns = rank == 1 ? shape[0] : shape[1];
+  [[maybe_unused]] const size_t num_rows = rank == 1 ? 1 : shape[0];
+
+  for (size_t row = 0; row < std::min(num_rows, show_rows); ++row) {
+    auto row_data = get_row(row);;
+    auto sum = std::accumulate(row_data.begin(), row_data.end(), 0.0);
+    auto mean = sum / num_rows;
+    auto [min, max] = std::minmax_element(row_data.begin(), row_data.end());
+
+    row_data.resize(10);
+    tbl.add(row, row_data, sum, mean, *min, *max);
+  }
+
+  return tbl.format(std::format("{} {}: {}", name,shape_str, type.name()));
+
+  /*
   auto extra_columns = {"min", "max", "mean", "std", "unique"};
 
   int column_width = 9;
@@ -449,7 +507,7 @@ std::string Tensor::format(size_t show_rows, size_t show_columns, int groups_row
   }
 
   return output;
-}
+*/}
 
 /*
 Tensor Tensor::convert_to(DType target_dtype) const {

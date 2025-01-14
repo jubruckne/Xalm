@@ -13,6 +13,8 @@
 #include "sampler.h"
 #include "time.h"
 #include "tokenizer.h"
+#include <cxxopts.hpp>
+
 
 void error_usage() {
   fprintf(stderr, "Usage:   main <checkpoint> [options]\n");
@@ -379,7 +381,66 @@ void run_passkey(
   std::cout << std::endl;
 }
 
+int run_convert(const cxxopts::ParseResult& params) {
+  auto model_path = params["model"].as<std::string>();
+
+
+  std::print("converting {}...\n", model_path);
+  YALMData model;
+  model.from_file(model_path);
+  Config config{};
+  config.from_yalm(model, 0);
+
+  std::print("{}", model.format());
+  std::print("layers: {}\n", config.n_layers);
+
+  auto t = model.tensors.at("l.9.attn.q.weight");
+
+  std::print("{}", t.format());
+
+
+
+  return 0;
+}
+
+
 int main(int argc, char* argv[]) {
+  // Map of allowed commands to their corresponding functions
+  const std::map<std::string, std::function<int(const cxxopts::ParseResult&)>> commands = {
+    {"convert", run_convert},
+  };
+  cxxopts::Options options("Xalm", "A brief description of Xalm");
+  options.add_options()
+      ("command", "Command to execute (run, test, convert)", cxxopts::value<std::string>())
+      ("m,model", "Path to the model file", cxxopts::value<std::string>())
+      ("i,prompt", "Prompt")
+      ("h,help", "Print usage");
+
+  options.parse_positional({"command"});
+  const auto result = options.parse(argc, argv);
+
+  if (result.count("help")) {
+    std::cout << options.help() << std::endl;
+    return 0;
+  }
+
+  if (!result.count("command")) {
+    std::cout << options.help() << std::endl;
+    return 1;
+  }
+
+  std::string command = result["command"].as<std::string>();
+  if (commands.find(command) == commands.end()) {
+    std::cerr << "Error: Invalid command. Allowed commands are: run, test, convert.\n";
+    return 1;
+  }
+
+  return commands.at(command)(result);
+
+  return 0;
+/*
+
+
   std::string checkpoint_path = "";    // e.g. out/model.bin
   // Options
   std::string device = "cpu";         // cpu or cuda
@@ -509,7 +570,10 @@ int main(int argc, char* argv[]) {
   } else if(mode == "test") {
 	  run_test(checkpoint_path);
     Profiler::report();
+  } else if(mode == "convert") {
+    run_convert(checkpoint_path);
+    Profiler::report();
   }
 
-  return 0;
+  return 0;*/
 }

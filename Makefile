@@ -22,7 +22,8 @@ else # LINUX
     OPENMP_LIB := -fopenmp
     LIBOMP_INCLUDE := /usr/include
     LIBOMP_LIB := /usr/lib/x86_64-linux-gnu
-    LDFLAGS := -lm $(OPENMP_LIB) -L$(LIBOMP_LIB)  #
+    LDFLAGS += $(OPENMP_LIB) -L$(LIBOMP_LIB) -fopenmp
+    CFLAGS += -mf16c -mavx2 -mfma
 endif
 
 # compile .c, .cpp, .cu files
