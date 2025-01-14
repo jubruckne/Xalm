@@ -18,11 +18,7 @@ ifeq ($(UNAME), Darwin)	# MAC OS
     CFLAGS += -mcpu=native -Xpreprocessor -fopenmp -I /opt/homebrew/opt/libomp/include
     LDFLAGS += -lomp -L /opt/homebrew/opt/libomp/lib
 else # LINUX
-    OPENMP_FLAGS := -fopenmp
-    OPENMP_LIB := -fopenmp
-    LIBOMP_INCLUDE := /usr/include
-    LIBOMP_LIB := /usr/lib/x86_64-linux-gnu
-    LDFLAGS += $(OPENMP_LIB) -L$(LIBOMP_LIB) -fopenmp
+    LDFLAGS += -fopenmp
     CFLAGS += -mf16c -mavx2 -mfma
 endif
 
