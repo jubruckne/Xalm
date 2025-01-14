@@ -19,7 +19,7 @@ ifeq ($(UNAME), Darwin)	# MAC OS
     LDFLAGS += -lomp -L /opt/homebrew/opt/libomp/lib
 else # LINUX
     LDFLAGS += -fopenmp
-    CFLAGS += -mf16c -mavx2 -mfma
+    CFLAGS += -stdlib=libc++ -mf16c -mavx2 -mfma
 endif
 
 # compile .c, .cpp, .cu files
