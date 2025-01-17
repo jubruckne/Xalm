@@ -34,7 +34,7 @@ public:
   }
 
   static void report() {
-    std::print("{}", "\n");
+    std::print("\n");
     std::printf("%-64s %12s %12s\n", "Function", "Calls", "Time (s)");
     std::printf("%s\n", std::string(64 + 12 + 12 + 2, '-').c_str());
     const std::regex cleanupRegex(R"((\b__restrict\b|\bconst\b|\<\>| const$|\s+(?=\*|&)))");

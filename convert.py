@@ -595,8 +595,10 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
 
         progress += 1
         actual_type = target_type
-        if conv_name == "embed.weight" or conv_name == "output.weight":
+        if conv_name == "embed.weight" or conv_name == "output.weight" or "l.1" in conv_name:
             actual_type = XType.f16
+        if conv_name == "embed.weight" or conv_name == "output.weight" or "l.0" in conv_name:
+            actual_type = XType.bf16
 
         if len(t.shape) == 1:
             actual_type = XType.f32

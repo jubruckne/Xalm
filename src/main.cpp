@@ -15,6 +15,8 @@
 #include "tokenizer.h"
 #include <cxxopts.hpp>
 
+#include "console.h"
+
 
 void error_usage() {
   fprintf(stderr, "Usage:   main <checkpoint> [options]\n");
@@ -393,19 +395,24 @@ int run_convert(const cxxopts::ParseResult& params) {
   std::print("{}", model.format());
   std::print("layers: {}\n", config.n_layers);
 
-  auto t = model.tensors.at("l.9.attn.q.weight");
+  auto t = model.tensors.at("l.0.attn.v.weight");
+  auto tc0 = t.convert_to(Type::F16);
+  /*auto tc1 = t.convert_to(Type::F8_E3M4);
+  auto tc2 = t.convert_to(Type::F8_E4M3);
+  auto tc3 = t.convert_to(Type::F8_E5M2);*/
 
-  std::print("{}", t.format());
-
-
+  console::print(console::bright_white,"{}", (t*1073.23).format());
+  console::print(console::blue,"{}", (tc0*1073.23).format());
+  /*console::print(console::green,"{}", tc1.format());
+  console::print(console::yellow,"{}", tc2.format());
+  console::print(console::red,"{}", tc3.format());*/
 
   return 0;
 }
 
 
 int main(int argc, char* argv[]) {
-  // Map of allowed commands to their corresponding functions
-  const std::map<std::string, std::function<int(const cxxopts::ParseResult&)>> commands = {
+  /*const std::map<std::string, std::function<int(const cxxopts::ParseResult&)>> commands = {
     {"convert", run_convert},
   };
   cxxopts::Options options("Xalm", "A brief description of Xalm");
@@ -436,16 +443,15 @@ int main(int argc, char* argv[]) {
 
   return commands.at(command)(result);
 
-  return 0;
-/*
+  return 0;*/
 
 
   std::string checkpoint_path = "";    // e.g. out/model.bin
   // Options
   std::string device = "cpu";         // cpu or cuda
   std::string mode = "completion";     // completion, passkey, or perplexity
-  std::string prompt = "";             // prompt string
-  std::string prompt_path = "";        // prompt file path
+  std::string prompt = "Q: What is the meaning of life? A:";             // prompt string
+  std::string prompt_path;        // prompt file path
   int context = 0;
   // Completion mode options
   int num_steps = 256;                 // number of steps to run for
@@ -536,8 +542,8 @@ int main(int argc, char* argv[]) {
       error_usage();
     }
   }
-  int has_prompt = prompt.size() > 0 ? 1 : 0;
-  int has_prompt_path = prompt_path.size() > 0 ? 1 : 0;
+  int has_prompt = !prompt.empty() ? 1 : 0;
+  int has_prompt_path = !prompt_path.empty() ? 1 : 0;
   if (mode == "completion" || mode == "perplexity") {
     if ((has_prompt + has_prompt_path) != 1) {
       error_usage();
@@ -569,10 +575,7 @@ int main(int argc, char* argv[]) {
   } else if(mode == "test") {
 	  run_test(checkpoint_path);
     Profiler::report();
-  } else if(mode == "convert") {
-    run_convert(checkpoint_path);
-    Profiler::report();
   }
 
-  return 0;*/
+  return 0;
 }

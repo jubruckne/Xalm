@@ -8,24 +8,29 @@
 #include <unistd.h>
 #include "table.h"
 #include "types.h"
+#include "stats.h"
+#include "console.h"
 
 template <typename... Indices>
-size_t Tensor::flatten_indices(Indices... indices) const requires (std::unsigned_integral<Indices> && ...) {
+size_t Tensor::flatten_indices(Indices... indices) const requires (std::integral<Indices> && ...) {
   static_assert(sizeof...(indices) > 0, "At least one index must be provided.");
   if (sizeof...(indices) >= rank) {
     throw std::invalid_argument("Number of indices does not match tensor rank.");
   }
 
   std::array<size_t, sizeof...(indices)> indices_ = {static_cast<size_t>(indices)...};
+  constexpr auto indices_rank = sizeof...(indices);
 
   size_t offset = 0;
   size_t stride = 1;
 
   for (int i = rank - 1; i >= 0; --i) {
-    if (indices_[i] >= shape[i]) {
-      throw std::out_of_range("Index out of bounds.");
+    if (i < indices_rank) {
+      if (indices_[i] >= static_cast<size_t>(shape[i])) {
+        throw std::out_of_range(std::format("Index {} out of bounds({}).", indices_[i], shape[i]));
+      }
+      offset += indices_[i] * stride;
     }
-    offset += indices_[i] * stride;
     stride *= shape[i];
   }
   return offset;
@@ -45,7 +50,7 @@ std::vector<float32_t> Tensor::get_row(Indices... indices) const {
   auto idx = flatten_indices(indices...);
   auto values = std::vector<float32_t>(shape[rank - 1]);
   for (size_t i = 0; i < shape[rank - 1]; ++i) {
-    values[i] = type.get_float(data, idx);
+    values[i] = type.get_float(data, idx + i);
   }
   return values;
 }
@@ -161,6 +166,8 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
     this->type = Type::F32;
   } else if (dtype_str == "F16") {
     this->type = Type::F16;
+  } else if (dtype_str == "BF16") {
+    this->type = Type::BF16;
   } else if (dtype_str == "U8") {
     this->type = Type::U8;
   } else if (dtype_str == "F8_E4M3") {
@@ -173,7 +180,7 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
 
   const size_t dsize = this->type.bit_size / 8;
 
-  size_t numel = 1;
+  linear_length = 1;
   rank = val.at("shape").size();
   if (rank > 4) {
     throw std::invalid_argument("shape exceeds 4 dimensions");
@@ -183,11 +190,11 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
 
   for (size_t i = 0; i < rank && i < 4; i++) {
     if (val.at("shape")[i].get<int>() != val.at("shape")[i]) {
-      std::print("{}","bad shape");
+      std::print("bad shape");
       throw std::bad_alloc();
     }
     shape[i] = val.at("shape")[i].get<int>();
-    numel *= shape[i];
+    linear_length *= shape[i];
   }
   if (val.at("data_offsets").size() != 2) {
     std::print("{}", "bad offsets");
@@ -234,8 +241,8 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
   }
 
   // validate the shape matches the size
-  if (numel * dsize != this->size) {
-    throw std::invalid_argument(std::format("bad size! {}: {} * {} = {}, expected {}", dtype_str, numel, dsize, numel * dsize, this->size));
+  if (linear_length * dsize != this->size) {
+    throw std::invalid_argument(std::format("bad size! {}: {} * {} = {}, expected {}", dtype_str, linear_length, dsize, linear_length * dsize, this->size));
   }
 
   // std::printf(" loaded.\n");
@@ -259,8 +266,6 @@ int Tensor::from_json(const std::string& name, const json& val, void* bytes_ptr,
 
   return tbl.format(filename);
 }
-
-
 
 int YALMData::from_file(const std::string& filename) {
   this->filename = filename;
@@ -331,7 +336,7 @@ int YALMData::from_file(const std::string& filename) {
   return 0;
 }
 
-std::string Tensor::format(size_t show_rows, size_t show_columns) const {
+std::string Tensor::format(const size_t show_rows, const size_t show_columns) const {
   if (!data) {
     return "Error: Tensor data is null.";
   }
@@ -353,9 +358,12 @@ std::string Tensor::format(size_t show_rows, size_t show_columns) const {
     column<size_t>{"row", -1, alignment::left, "{}", true},
     column<std::array<float32_t, 10>>{"col", -1, alignment::right, "{:.3f}", true},
     column<float32_t>{"sum", -1, alignment::right, "{:.3f}", false},
-    column<float32_t>{"mean", -1, alignment::right, "{:.3f}", false},
+    //column<float32_t>{"mean", -1, alignment::right, "{:.3f}", false},
     column<float32_t>{"min", -1, alignment::right, "{:.3f}", false},
-    column<float32_t>{"max", -1, alignment::right, "{:.3f}", false}
+    column<float32_t>{"max", -1, alignment::right, "{:.3f}", true},
+    column<std::string>{"histogram", 12, alignment::left, "{}", false},
+    column<float32_t>{"offset", -1, alignment::right, "{:.4f}", false},
+    column<float32_t>{"scale", -1, alignment::right, "{:.2f}", false}
     );
 
   [[maybe_unused]] const size_t num_columns = rank == 1 ? shape[0] : shape[1];
@@ -363,201 +371,89 @@ std::string Tensor::format(size_t show_rows, size_t show_columns) const {
 
   for (size_t row = 0; row < std::min(num_rows, show_rows); ++row) {
     auto row_data = get_row(row);;
-    auto sum = std::accumulate(row_data.begin(), row_data.end(), 0.0);
-    auto mean = sum / num_rows;
-    auto [min, max] = std::minmax_element(row_data.begin(), row_data.end());
 
+    stats::histogram_t histogram = stats::histogram(row_data,10);
     row_data.resize(10);
-    tbl.add(row, row_data, sum, mean, *min, *max);
+
+    tbl.add(row, row_data, histogram.sum, histogram.min, histogram.max, histogram.format(), histogram.calculate_offset(), histogram.calculate_scale());
   }
 
   return tbl.format(std::format("{} {}: {}", name,shape_str, type.name()));
+}
 
-  /*
-  auto extra_columns = {"min", "max", "mean", "std", "unique"};
-
-  int column_width = 9;
-  std::string output = std::format("{}{}: {}\n", name, shape_str, type.name());
-
-  size_t num_columns = rank == 1 ? shape[0] : shape[1];
-  show_columns = std::min(show_columns, num_columns);
-
-  std::string sep = std::string(column_width * (show_columns + extra_columns.size()) + 6 + (show_columns == 0 ? 0 : 3), '-') + "\n";
-
-  output += sep;
-  output += std::format("{:<{}}", "row", 6);
-
-  struct column_t {
-    std::string name;
-    size_t i_begin = 0;
-    size_t i_end = 0;
-    bool show = true;
-  };
-
-  std::vector<column_t> col_def;
-
-  for (size_t col = 0; col < num_columns; ++col) {
-    column_t column;
-    if (groups_col == 1) {
-      column.i_begin = col;
-      column.i_end = col;
-      column.name = std::format("{:>{}}", std::format("col {}", col), column_width);
-      column.show = col < show_columns;
-    } else {
-      column.i_begin = col * groups_col;
-      column.i_end = col * (groups_col + 1) - 1;
-      column.name = std::format("{:>{}}", std::format("col {}-{}", column.i_begin, column.i_end), column_width);
-      column.show = col < show_columns;
-
-      if (column.show && extra_columns.size() > 0) {
-        // add stats columns
-        for (std::string c: extra_columns) {
-          col_def.push_back(column_t{c, 0, 0, true});
-          output += std::format("{:>{}}", c, column_width);
-        }
-      }
-    }
-    column.show = col < show_columns;
-
-    if (column.show) {
-      output += std::format("{:>{}}", std::format("col {}", col), column_width);
-    } else if (col == show_columns) {
-      output += std::format("{:>{}}", "...", 3);
-    }
-
-    col_def.push_back(column);
+[[nodiscard]] Tensor Tensor::operator*(const float32_t factor) const{
+  auto result = Tensor::zeroes(type, shape);
+  for (size_t i = 0; i < linear_length; ++i) {
+    const float32_t v = type.get_float(data, i);
+    result.type.set_float(result.data, i, v * factor);
   }
 
-  for (auto c: extra_columns) {
-    output += std::format("{:>{}}", c, column_width);
+  return result;
+}
+
+[[nodiscard]] Tensor Tensor::operator-(const Tensor& other) const {
+auto result = Tensor::zeroes(type, shape);
+  for (size_t i = 0; i < linear_length; ++i) {
+    const float32_t a = type.get_float(data, i);
+    const float32_t b = other.type.get_float(other.data, i);
+    result.type.set_float(result.data, i, a - b);
   }
 
-  output += "\n" + sep;
+  return result;
+}
 
-  size_t num_rows = rank == 1 ? 1 : shape[0];
-  show_rows = std::min(show_rows, num_rows);
-
-  struct stats_t {
-    float sum = 0;
-    float min = std::numeric_limits<float>::max();
-    float max = std::numeric_limits<float>::min();
-    float sum_abs = 0;
-    std::unordered_set<float> unique_values;
-  };
-
-  stats_t all_stats{0,std::numeric_limits<float>::max(),std::numeric_limits<float>::min(), 0};
-
-  for (size_t row = 0; row < show_rows; ++row) {
-    output += std::format("{:<{}}", row, 6);
-
-    for (size_t i = 0; i < num_columns; i += groups_col) {
-      stats_t col_stats{0,std::numeric_limits<float>::max(),std::numeric_limits<float>::min(), 0};
-
-      for (int gc = 0; gc < groups_col; ++gc) {
-        auto val = type.get_float(data, num_columns * row + i);
-
-        for (auto st: {&all_stats, &col_stats}) {
-          st->sum += val;
-          st->sum_abs += std::abs(val);
-          st->min = std::min(st->min, val);
-          st->max = std::max(st->max, val);
-          st->unique_values.insert(val);
-        }
-
-        if (i < show_columns) {
-          output += std::format("{:>{}.4f}", val*128.0f, column_width);
-        }
-      }
-    }
-
-    if (show_columns > 0) {
-      output += std::format("{:>{}}", " ", 3);
-    }
-
-    output += "\n";
-  }
-
-  output += sep;
-  { // final header
-    output += std::format("{:<{}}", num_rows, 6);
-    if (show_columns > 0) {
-      output += std::format("{:>{}}", " ", 3);
-    }
-    for (std::string c: extra_columns) {
-      if (c == "mean") {
-        output += std::format("{:>{}.4f}", all_stats.sum / static_cast<float>(num_columns), column_width);
-      } else if (c == "std") {
-        output += std::format("{:>{}.4f}", static_cast<float>(666), column_width);
-      } else if (c == "min") {
-        output += std::format("{:>{}.4f}", all_stats.min, column_width);
-      } else if (c == "max") {
-        output += std::format("{:>{}.4f}", all_stats.max, column_width);
-      } else if (c == "sum") {
-        output += std::format("{:>{}.4f}", all_stats.sum, column_width);
-      } else if (c == "sum_abs") {
-        output += std::format("{:>{}.4f}", all_stats.sum_abs, column_width);
-      } else if (c == "unique") {
-        output += std::format("{:>{}}", all_stats.unique_values.size(), column_width);
-      } else {
-        throw std::invalid_argument(std::format("unknown column {}", c));
-      }
-    }
-
-    output += "\n\n";
-  }
-
-  return output;
-*/}
-
-/*
-Tensor Tensor::convert_to(DType target_dtype) const {
+Tensor Tensor::convert_to(Type target_type) const {
   assert(data != nullptr && "Tensor data cannot be null");
 
-  // Check if target dtype is supported
-  if (target_dtype != DType::F32 && target_dtype != DType::F16 && target_dtype != DType::F8) {
+  if (target_type != Type::F32 && target_type != Type::F16 && target_type != Type::F8_E2M5 && target_type != Type::F8_E3M4 && target_type != Type::F8_E4M3 && target_type != Type::F8_E5M2) {
     std::cerr << "convert_dtype only supports F32, F16, F8 conversions." << std::endl;
     exit(0);
   }
 
-  // If already the desired type, no conversion is needed
-  if (dtype == target_dtype) {
+  if (type == target_type) {
     std::cerr << "Tensor is already of target dtype." << std::endl;
     exit(0);
   }
 
-  size_t num_elements = size / dtype_size(dtype);
-  std::vector<uint8_t> new_data(num_elements * dtype_size(target_dtype));
+  std::vector<uint8_t> new_data(linear_length * target_type.bit_size / 8);
 
-  if (dtype == DType::F32 && target_dtype == DType::F16) {
-    // Convert from float (F32) to half-precision float (F16)
-    float* src = static_cast<float*>(data);
-    f16_t* dst = reinterpret_cast<f16_t*>(new_data.data());
-    for (size_t i = 0; i < num_elements; ++i) {
-      dst[i] = f16_t::from_float(src[i]);
+  if (type == Type::F16 && target_type == Type::F8_E4M3) {
+    float16_t* src = static_cast<float16_t*>(data);
+    f8e4m3_t* dst = reinterpret_cast<f8e4m3_t*>(new_data.data());
+    for (size_t i = 0; i < this->linear_length; ++i) {
+      dst[i] = f8e4m3_t::from(src[i]);
     }
-  } else if (dtype == DType::F16 && target_dtype == DType::F32) {
-    // Convert from half-precision float (F16) to float (F32)
-    f16_t* src = static_cast<f16_t*>(data);
-    float* dst = reinterpret_cast<float*>(new_data.data());
-    for (size_t i = 0; i < num_elements; ++i) {
-      dst[i] = f16_t::to_float(src[i]);
+  } else if (type == Type::BF16 && target_type == Type::F16) {
+    uint16_t* src = static_cast<uint16_t*>(data);
+    float16_t* dst = reinterpret_cast<float16_t*>(new_data.data());
+    for (size_t i = 0; i < this->linear_length; ++i) {
+      dst[i] = bf16_to_f32(src[i]);
     }
-  } else if (dtype == DType::F16 && target_dtype == DType::F8) {
-    // Convert from half-precision float (F16) to quarter float (f8)
-    f16_t* src = static_cast<f16_t*>(data);
-    f8_t* dst = reinterpret_cast<f8_t*>(new_data.data());
-    for (size_t i = 0; i < num_elements; ++i) {
-      dst[i] = f8_t::from(src[i]);
+  } else if (type == Type::F16 && target_type == Type::F8_E5M2) {
+    float16_t* src = static_cast<float16_t*>(data);
+    f8e5m2_t* dst = reinterpret_cast<f8e5m2_t*>(new_data.data());
+    for (size_t i = 0; i < this->linear_length; ++i) {
+      dst[i] = f8e5m2_t::from(src[i]);
+    }
+  } else if (type == Type::F16 && target_type == Type::F8_E3M4) {
+    float16_t* src = static_cast<float16_t*>(data);
+    f8e3m4_t* dst = reinterpret_cast<f8e3m4_t*>(new_data.data());
+    for (size_t i = 0; i < this->linear_length; ++i) {
+      dst[i] = f8e3m4_t::from(src[i]);
+    }
+  } else if (type == Type::F16 && target_type == Type::F8_E2M5) {
+    float16_t* src = static_cast<float16_t*>(data);
+    f8e2m5_t* dst = reinterpret_cast<f8e2m5_t*>(new_data.data());
+    for (size_t i = 0; i < this->linear_length; ++i) {
+      dst[i] = f8e2m5_t::from(src[i]);
     }
   } else {
     std::cerr << "Unsupported dtype conversion." << std::endl;
     exit(0);
   }
 
-  Tensor converted(this->name, target_dtype, this->shape, new uint8_t[new_data.size()], new_data.size());
-
-  std::memcpy(data, new_data.data(), new_data.size());
+  Tensor converted(this->name, target_type, this->shape, new uint8_t[new_data.size()], new_data.size(), true);
+  std::memcpy(converted.data, new_data.data(), new_data.size());
 
   return converted;
 }
-*/

@@ -6,6 +6,8 @@
 
 #include "profiler.h"
 #include "types.h"
+#include "console.h"
+
 
 [[maybe_unused]] static void matmul(float* __restrict__ xout, const float* __restrict__ x, const float* __restrict__ w, const int n, const int d) noexcept {
   // W (d,n) @ x (n,) -> xout (d,)
@@ -53,6 +55,8 @@ template <> consteval std::string_view type_name<float16_t>() { return "float16_
 template <> consteval std::string_view type_name<bfloat16_t>() { return "bfloat16_t"; }
 template <> consteval std::string_view type_name<f8e4m3_t>() { return "f8e4m3_t"; }
 template <> consteval std::string_view type_name<f8e5m2_t>() { return "f8e5m2_t"; }
+template <> consteval std::string_view type_name<f8e3m4_t>() { return "f8e3m4_t"; }
+template <> consteval std::string_view type_name<f8e2m5_t>() { return "f8e2m5_t"; }
 
 template <typename T>
 concept NativeTypes = std::is_same_v<T, float32_t>
@@ -61,6 +65,7 @@ concept NativeTypes = std::is_same_v<T, float32_t>
 template <typename T>
 concept AllowedTypes = std::is_same_v<T, float32_t>
               || std::is_same_v<T, float16_t>
+              || std::is_same_v<T, bfloat16_t>
               || std::is_same_v<T, f8e5m2_t>
               || std::is_same_v<T, f8e4m3_t>;
 
@@ -77,13 +82,15 @@ static void matmul(float* __restrict__ xout, const float* __restrict__ x, const 
 
   int i;
   int j;
-#pragma omp parallel for private(i)
+#pragma omp parallel for private(i, j)
   for (i = 0; i < d; i++) {
     float val = 0.0f;
 #pragma omp simd
     for (j = 0; j < n; j++) {
       if constexpr(std::is_same<T, float32_t>() || std::is_same<T, float16_t>()) {
         val += w[i * n + j] * x[j];
+      } else if constexpr(std::is_same<T, bfloat16_t>()) {
+        val += bf16_to_f32(reinterpret_cast<const uint16_t*>(w)[i * n + j]) * x[j];
       } else {
         val += T::to_float(w[i * n + j]) * x[j];
       }
@@ -147,6 +154,10 @@ void matmul(float* __restrict__ xout, const float* __restrict__ x, const Tensor*
     }
     case Type::F16: {
       matmul<float16_t>(xout, x, static_cast<const float16_t*>(w->data), n, d);
+      return;
+    }
+    case Type::BF16: {
+      matmul<bfloat16_t>(xout, x, static_cast<const bfloat16_t*>(w->data), n, d);
       return;
     }
     case Type::F8_E4M3: {
@@ -522,6 +533,13 @@ void Model::_copy_embedding(const InferenceState& s, const int token) const {
       }
       break;
     }
+    case Type::BF16: {
+      const auto* emb = static_cast<uint16_t*>(token_embedding_table->data);
+      for (int i = 0; i < c.dim; ++i) {
+        s.x()[i] = bf16_to_f32(emb[token * c.dim + i]);
+      }
+      break;
+    }
     case Type::F8_E4M3: {
       const auto* emb = static_cast<f8e4m3_t*>(token_embedding_table->data);
       for (int i = 0; i < c.dim; ++i) {
@@ -530,6 +548,7 @@ void Model::_copy_embedding(const InferenceState& s, const int token) const {
       break;
     }
     default: {
+      console::print("unsupported weight dtype: {}", token_embedding_table->type.name());
       assert(false && "unsupported weight dtype");
     }
   }

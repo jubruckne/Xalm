@@ -18,13 +18,16 @@ public:
   size_t size = 0;
   size_t linear_length = 0;
 
-  template<class ...Indices> size_t flatten_indices(Indices... indices) const requires (std::unsigned_integral<Indices> && ...);
+  template<class ...Indices> size_t flatten_indices(Indices... indices) const requires (std::integral<Indices> && ...);
 
   template <typename... Indices> requires (std::unsigned_integral<Indices> && ...)
   const float& operator[](Indices... indices) const;
 
   template <typename... Indices> requires (std::unsigned_integral<Indices> && ...)
   std::vector<float32_t> get_row(Indices... indices) const;
+
+  [[nodiscard]] Tensor operator*(float32_t factor) const;
+  [[nodiscard]] Tensor operator-(const Tensor& other) const;
 
   Tensor();
   ~Tensor();
@@ -34,6 +37,9 @@ public:
   static Tensor uniform(Type type, const std::vector<int> &shape, float min, float max, const std::string& name = "");
 
   [[nodiscard]] std::string format(size_t show_rows = 8, size_t show_columns = 8) const;
+
+  template<class target_type> [[nodiscard]] Tensor convert_to() const;
+  [[nodiscard]] Tensor convert_to(Type target_type) const;
 
   int from_json(const std::string& name, const json& val, void* bytes_ptr, size_t bytes_size);
 

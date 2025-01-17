@@ -70,6 +70,8 @@ public:
   }
 };
 
+using f8e2m5_t = f8_t<2, 5>;
+using f8e3m4_t = f8_t<3, 4>;
 using f8e4m3_t = f8_t<4, 3>;
 using f8e5m2_t = f8_t<5, 2>;
 
@@ -195,10 +197,28 @@ namespace Type {
 
 */
 
+static float32_t bf16_to_f32(const uint16_t h) {
+  const uint32_t i = static_cast<uint32_t>(h) << 16;
+  return *reinterpret_cast<const float32_t*>(&i);
+}
+
+static uint16_t f32_to_bf16(const float32_t s) {
+  const uint32_t i = *reinterpret_cast<const uint32_t*>(&s);
+
+  if ((i & 0x7fffffff) > 0x7f800000) {
+    return (i >> 16) | 64;
+  }
+
+  return (i + (0x7fff + ((i >> 16) & 1))) >> 16;
+}
+
 struct Type {
   static const Type Unknown;
   static const Type F32;
   static const Type F16;
+  static const Type BF16;
+  static const Type F8_E2M5;
+  static const Type F8_E3M4;
   static const Type F8_E4M3;
   static const Type F8_E5M2;
   static const Type U8;
@@ -216,6 +236,9 @@ struct Type {
   [[nodiscard]] constexpr std::string_view name() const {
     if (*this == Type::F32) return "F32";
     if (*this == Type::F16) return "F16";
+    if (*this == Type::BF16) return "BF16";
+    if (*this == Type::F8_E2M5) return "F8_E2M5";
+    if (*this == Type::F8_E3M4) return "F8_E3M4";
     if (*this == Type::F8_E4M3) return "F8_E4M3";
     if (*this == Type::F8_E5M2) return "F8_E5M2";
     if (*this == Type::U8) return "U8";
@@ -226,27 +249,43 @@ struct Type {
   [[nodiscard]] constexpr size_t byte_offset(const std::size_t offset) const {
     if (*this == Type::F32) return offset * sizeof(float32_t);
     if (*this == Type::F16) return offset * sizeof(float16_t);
+    if (*this == Type::BF16) return offset * sizeof(bfloat16_t);
+    if (*this == Type::F8_E2M5) return offset * sizeof(uint8_t);
+    if (*this == Type::F8_E3M4) return offset * sizeof(uint8_t);
     if (*this == Type::F8_E4M3) return offset * sizeof(uint8_t);
     if (*this == Type::F8_E5M2) return offset * sizeof(uint8_t);
     if (*this == Type::U8) return offset * sizeof(uint8_t);
     if (*this == Type::QI4) return offset * sizeof(uint8_t) / 2;
     return 0;
-  };
-
+  }
 
   [[nodiscard]] constexpr const void* data_ptr(const void* data, const std::size_t offset) const {
     return static_cast<const uint8_t*>(data) + byte_offset(offset);
-  };
+  }
 
-  float32_t get_float(const void* data, const std::size_t offset) const {
+  [[nodiscard]] float32_t get_float(const void* data, const std::size_t offset) const {
     auto d = data_ptr(data, offset);
 
     if (id == Type::F32.id) return *static_cast<const float32_t*>(d);
     if (id == Type::F16.id) return *static_cast<const float16_t*>(d);
+    if (id == Type::BF16.id) return bf16_to_f32(*static_cast<const uint16_t*>(d));
+    if (id == Type::F8_E2M5.id) return f8e2m5_t::to_float(*static_cast<const f8e2m5_t*>(d));
+    if (id == Type::F8_E3M4.id) return f8e3m4_t::to_float(*static_cast<const f8e3m4_t*>(d));
     if (id == Type::F8_E4M3.id) return f8e4m3_t::to_float(*static_cast<const f8e4m3_t*>(d));
     if (id == Type::F8_E5M2.id) return f8e5m2_t::to_float(*static_cast<const f8e5m2_t*>(d));
 
     return 666.66f;
+  }
+
+  void set_float(void* data, const std::size_t offset, float32_t value) const {
+    if (id == Type::F32.id) { static_cast<float32_t*>(data)[offset] = value; return;}
+    if (id == Type::F16.id) { static_cast<float16_t*>(data)[offset] = static_cast<float16_t>(value); return; }
+    if (id == Type::BF16.id) { static_cast<uint16_t*>(data)[offset] = f32_to_bf16(value); return; }
+    if (id == Type::F8_E2M5.id) { static_cast<f8e2m5_t*>(data)[offset] = f8e2m5_t::from(value); return; }
+    if (id == Type::F8_E3M4.id) { static_cast<f8e3m4_t*>(data)[offset] = f8e3m4_t::from(value); return; }
+    if (id == Type::F8_E4M3.id) { static_cast<f8e4m3_t*>(data)[offset] = f8e4m3_t::from(value); return; }
+    if (id == Type::F8_E5M2.id) { static_cast<f8e5m2_t*>(data)[offset] = f8e5m2_t::from(value); return; }
+    throw std::invalid_argument("Invalid type");
   }
 
   [[nodiscard]] static Type parse(const std::string_view str) {
@@ -261,6 +300,9 @@ struct Type {
 
     if (type_str == "F32") return Type::F32;
     if (type_str == "F16") return Type::F16;
+    if (type_str == "BF16") return Type::BF16;
+    if (type_str == "F8.E2M5") return Type::F8_E2M5;
+    if (type_str == "F8.E3M4") return Type::F8_E3M4;
     if (type_str == "F8.E4M3") return Type::F8_E4M3;
     if (type_str == "F8.E5M2") return Type::F8_E5M2;
     if (type_str == "U8") return Type::U8;
@@ -280,10 +322,13 @@ struct Type {
 constexpr Type Type::Unknown{0, 0};
 constexpr Type Type::F32{1, sizeof(uint32_t) * 8};
 constexpr Type Type::F16{2, sizeof(uint16_t) * 8};
-constexpr Type Type::F8_E4M3{3, sizeof(uint8_t) * 8};
-constexpr Type Type::F8_E5M2{4, sizeof(uint8_t) * 8};
-constexpr Type Type::U8{5, sizeof(uint8_t) * 8};
-constexpr Type Type::QI4{6, sizeof(uint8_t) * 4};
+constexpr Type Type::BF16{3, sizeof(uint16_t) * 8};
+constexpr Type Type::F8_E2M5{4, sizeof(uint8_t) * 8};
+constexpr Type Type::F8_E3M4{5, sizeof(uint8_t) * 8};
+constexpr Type Type::F8_E4M3{6, sizeof(uint8_t) * 8};
+constexpr Type Type::F8_E5M2{7, sizeof(uint8_t) * 8};
+constexpr Type Type::U8{8, sizeof(uint8_t) * 8};
+constexpr Type Type::QI4{9, sizeof(uint8_t) * 4};
 
 struct qi8_t {
   static constexpr int block_length = 8;
