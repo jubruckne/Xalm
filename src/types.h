@@ -1,73 +1,86 @@
 #pragma once
-#include <cstdint>
+#include "console.h"
+
+
 #include <cassert>
+#include <cstdint>
 
 #if defined(__AVX2__) && defined(__F16C__)
-  #include <immintrin.h> // Intel/AVX2
-  using float16_t = __fp16;
-  using float32_t = float;
-  using bfloat16_t = uint16_t;
+#include <immintrin.h> // Intel/AVX2
+using float16_t = __fp16;
+using float32_t = float;
+using bfloat16_t = uint16_t;
 #elif defined(__ARM_NEON) || defined(__aarch64__)
-  #include <arm_neon.h>  // ARM NEON
+#include <arm_neon.h> // ARM NEON
 #endif
 
-
-template<int8_t N> consteval float EXP2() noexcept {
-  if constexpr (N==0) return 1;
-  if constexpr (N>0) return EXP2<N-1>()*2;
-  if constexpr (N<0) return EXP2<N+1>()/2;
+template<int8_t N>
+consteval float EXP2() {
+	if constexpr (N == 0)
+		return 1;
+	if constexpr (N > 0)
+		return EXP2<N - 1>() * 2;
+	if constexpr (N < 0)
+		return EXP2<N + 1>() / 2;
 }
 
-template<int8_t N> consteval int EXP_I2() noexcept requires (N >= 0) {
-  if constexpr (N==0) return 1;
-  if constexpr (N>0) return EXP_I2<N-1>()*2;
+template<int8_t N>
+consteval int EXP_I2()
+	requires(N >= 0)
+{
+	if constexpr (N == 0)
+		return 1;
+	if constexpr (N > 0)
+		return EXP_I2<N - 1>() * 2;
 }
 
-template<uint8_t E, uint8_t M> requires (M > 0 && E+M == 7)
+template<uint8_t E, uint8_t M>
+	requires(M > 0 && E + M == 7)
 struct f8_t {
 private:
-  uint8_t bits = 0;
+	uint8_t bits = 0;
 
-  explicit f8_t(const uint8_t bits) noexcept: bits(bits) {}
+	explicit f8_t(const uint8_t bits) noexcept : bits(bits) {}
 
-  static constexpr int E_BIAS = EXP2<E-1>()-1;
-  static constexpr float E_BIAS_MINUS_127 = EXP2<E_BIAS-127>();
-  static constexpr float E_127_MINUS_BIAS = EXP2<127-E_BIAS>();
-  static constexpr float max = (2-EXP2<-M+1>())*EXP2<EXP_I2<E-1>()>();
-  static constexpr float min = EXP2<-M>()*EXP2<2-EXP_I2<E-1>()>();
+	static constexpr int E_BIAS = EXP2<E - 1>() - 1;
+	static constexpr float E_BIAS_MINUS_127 = EXP2<E_BIAS - 127>();
+	static constexpr float E_127_MINUS_BIAS = EXP2<127 - E_BIAS>();
+	static constexpr float max = (2 - EXP2<-M + 1>()) * EXP2<EXP_I2<E - 1>()>();
+	static constexpr float min = EXP2<-M>() * EXP2<2 - EXP_I2<E - 1>()>();
+
 public:
-  static f8_t from(const float value) noexcept {
-    union {
-      float f;
-      uint32_t bits;
-    } in = {value};
-    uint8_t bits = (in.bits >> 24) & 0x80;
-    in.bits &= 0x7fffffff;
-    if (in.f >= max) {
-      bits |= 0x7E;
-    } else if (in.f < min) {
-    } else {
-      in.f *= E_BIAS_MINUS_127;
-      in.bits += 1 << (22-M);
-      bits |= (in.bits >> (23-M)) & 0x7F;
-    }
+	static f8_t from(const float value) noexcept {
+		union {
+			float f;
+			uint32_t bits;
+		} in = {value};
+		uint8_t bits = (in.bits >> 24) & 0x80;
+		in.bits &= 0x7fffffff;
+		if (in.f >= max) {
+			bits |= 0x7E;
+		} else if (in.f < min) {
+		} else {
+			in.f *= E_BIAS_MINUS_127;
+			in.bits += 1 << (22 - M);
+			bits |= (in.bits >> (23 - M)) & 0x7F;
+		}
 
-    return f8_t(bits);
-  }
+		return f8_t(bits);
+	}
 
-  static float to_float(const f8_t value) noexcept {
-    union {
-      float f;
-      uint32_t bits;
-    } out = {0};
-    out.bits = value.bits & 0x80;
-    out.bits <<= 24;
-    uint32_t _bits = value.bits & 0x7F;
-    _bits <<= (23-M);
-    out.bits |= _bits;
-    out.f *= E_127_MINUS_BIAS;
-    return out.f;
-  }
+	static float to_float(const f8_t value) noexcept {
+		union {
+			float f;
+			uint32_t bits;
+		} out = {0};
+		out.bits = value.bits & 0x80;
+		out.bits <<= 24;
+		uint32_t _bits = value.bits & 0x7F;
+		_bits <<= (23 - M);
+		out.bits |= _bits;
+		out.f *= E_127_MINUS_BIAS;
+		return out.f;
+	}
 };
 
 using f8e2m5_t = f8_t<2, 5>;
@@ -76,247 +89,243 @@ using f8e4m3_t = f8_t<4, 3>;
 using f8e5m2_t = f8_t<5, 2>;
 
 struct qi4_t {
-  static constexpr int block_length = 32;
+	static constexpr int block_length = 32;
 
-  struct block {
-    float16_t scale;
-    uint8_t v[block_length / 2];
-  };
+	struct block {
+		float16_t scale;
+		uint8_t v[block_length / 2];
+	};
 
-  static constexpr int block_size = sizeof(block);
+	static constexpr int block_size = sizeof(block);
 
 
-  static constexpr int8_t lut[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+	static constexpr int8_t lut[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
 
-  static constexpr float16_t lut2[16] = {
-    -1.000000, -0.818898, -0.653543, -0.511811,
-    -0.385827, -0.275591, -0.173228, -0.078740,
-    0.007874, 0.102362, 0.196850, 0.309213,
-    0.437323, 0.583307,  0.770787, 1.000000
-  };
+	static constexpr float16_t lut2[16] = {-1.000000, -0.818898, -0.653543, -0.511811, -0.385827, -0.275591,
+										   -0.173228, -0.078740, 0.007874,	0.102362,  0.196850,  0.309213,
+										   0.437323,  0.583307,	 0.770787,	1.000000};
 
-  static void store_f32(uint8_t* data, const size_t index, const float value) {
-    // Quantization logic: map the float value to a 4-bit range (0 to 15)
-    auto q = static_cast<uint8_t>(std::round(value * 15.0f));
-    q = std::min<uint8_t>(15, q);
+	static void store_f32(uint8_t* data, const size_t index, const float value) {
+		// Quantization logic: map the float value to a 4-bit range (0 to 15)
+		auto q = static_cast<uint8_t>(std::round(value * 15.0f));
+		q = std::min<uint8_t>(15, q);
 
-    const size_t byte_index = index / 2;
-    const size_t nibble_index = index % 2;
+		const size_t byte_index = index / 2;
+		const size_t nibble_index = index % 2;
 
-    if (nibble_index == 0) {
-      data[byte_index] = (data[byte_index] & 0x0F) | (q << 4);
-    } else {
-      data[byte_index] = (data[byte_index] & 0xF0) | (q & 0x0F);
-    }
-  }
+		if (nibble_index == 0) {
+			data[byte_index] = (data[byte_index] & 0x0F) | (q << 4);
+		} else {
+			data[byte_index] = (data[byte_index] & 0xF0) | (q & 0x0F);
+		}
+	}
 
-  static float load_f32(const uint8_t* data, const size_t index) {
-    const size_t byte_index = index / 2;
-    const size_t nibble_index = index % 2;
+	static float load_f32(const uint8_t* data, const size_t index) {
+		const size_t byte_index = index / 2;
+		const size_t nibble_index = index % 2;
 
-    uint8_t quantized;
-    if (nibble_index == 0) {
-      quantized = (data[byte_index] >> 4) & 0x0F;
-    } else {
-      quantized = data[byte_index] & 0x0F;
-    }
+		uint8_t quantized;
+		if (nibble_index == 0) {
+			quantized = (data[byte_index] >> 4) & 0x0F;
+		} else {
+			quantized = data[byte_index] & 0x0F;
+		}
 
-    return static_cast<float32_t>(quantized) / 15.0f;
-  }
+		return static_cast<float32_t>(quantized) / 15.0f;
+	}
 };
-
-/*
-namespace Types {
-  template <typename T>
-  concept Type = requires(T a, typename T::native_type* data, float& f32, float32x4_t& f32x4, float& f16, float16x4_t& f16x4) {
-    typename T::type;
-    typename T::native_type;
-    { T::name } -> std::convertible_to<std::string_view>;
-    { T::bit_size } -> std::convertible_to<size_t>;
-    { T::load_f16_x4(data) } -> std::convertible_to<float16x4_t>;
-    { T::store_f16_x4(data, f16x4) };
-    { T::load_f32_x4(data) } -> std::convertible_to<float32x4_t>;
-    { T::store_f32_x4(data, f32x4) };
-  };
-
-  struct f32_t {
-    using type = f32_t;
-    using native_type = float32_t;
-    static constexpr size_t bit_size = sizeof(native_type) * 8;
-    static constexpr std::string_view name = "F32";
-
-    static float32x4_t load_f32_x4(const native_type* data) {
-      return vld1q_f32(data);
-    }
-
-    static void store_f32_x4(native_type* data, const float32x4_t value) {
-      vst1q_f32(data, value);
-    }
-
-    static float16x4_t load_f16_x4(const native_type* data) {
-      return vcvt_f16_f32(vld1q_f32(data));
-    }
-
-    static void store_f16_x4(native_type* data, const float16x4_t value) {
-      vst1q_f32(data, vcvt_f32_f16(value));
-    }
-  };
-
-  struct f16_t {
-    using type = f32_t;
-    using native_type = float16_t;
-    static constexpr size_t bit_size = sizeof(native_type) * 8;
-    static constexpr std::string_view name = "F16";
-
-    static float32x4_t load_f32_x4(const native_type* data) {
-      auto f16_values = vld1_f16(data);
-      return vcvt_f32_f16(f16_values);
-    }
-
-    static void store_f32_x4(native_type* data, const float32x4_t values) {
-      vst1_f16(data, vcvt_f16_f32(values));
-    }
-
-    static float16x4_t load_f16_x4(void* data) {
-      return vcvt_f16_f32(vld1q_f32(static_cast<float32_t*>(data)));
-    }
-
-    static void store_f16_x4(void* data, const float16x4_t value) {
-      vst1q_f32(static_cast<float*>(data), vcvt_f32_f16(value));
-    }
-  };
-};
-
-namespace Type {
-  using F32 = Types::f32_t;
-  static_assert(Types::Type<F32>, "f32_t must implement the Type concept!");
-
-  using F16 = Types::f16_t;
-  static_assert(Types::Type<F16>, "f16_t must implement the Type concept!");
-}
-
-*/
 
 static float32_t bf16_to_f32(const uint16_t h) {
-  const uint32_t i = static_cast<uint32_t>(h) << 16;
-  return *reinterpret_cast<const float32_t*>(&i);
+	const uint32_t i = static_cast<uint32_t>(h) << 16;
+	return *reinterpret_cast<const float32_t*>(&i);
 }
 
 static uint16_t f32_to_bf16(const float32_t s) {
-  const uint32_t i = *reinterpret_cast<const uint32_t*>(&s);
+	const uint32_t i = *reinterpret_cast<const uint32_t*>(&s);
 
-  if ((i & 0x7fffffff) > 0x7f800000) {
-    return (i >> 16) | 64;
-  }
+	if ((i & 0x7fffffff) > 0x7f800000) {
+		return (i >> 16) | 64;
+	}
 
-  return (i + (0x7fff + ((i >> 16) & 1))) >> 16;
+	return (i + (0x7fff + ((i >> 16) & 1))) >> 16;
 }
+/*
+struct data_type;
+
+template<auto t>
+struct traits;
+
+struct data_type {
+	constexpr data_type(const uint8_t id) : id(id) {} // NOLINT(*-explicit-constructor)
+	constexpr uint8_t id = 0;
+
+
+
+};
+
+constexpr data_type unknown = 0;
+constexpr data_type f32 = 1;
+constexpr data_type f16 = 2;
+constexpr data_type bf16 = 3;
+constexpr data_type f8_e2m5 = 4;
+constexpr data_type f8_e3m4 = 5;
+constexpr data_type f8_e4m3 = 6;
+constexpr data_type f8_e5m2 = 7;
+
+template<>
+struct traits<f32> {};*/
+
 
 struct Type {
-  static const Type Unknown;
-  static const Type F32;
-  static const Type F16;
-  static const Type BF16;
-  static const Type F8_E2M5;
-  static const Type F8_E3M4;
-  static const Type F8_E4M3;
-  static const Type F8_E5M2;
-  static const Type U8;
-  static const Type QI4;
+	static const Type Unknown;
+	static const Type F32;
+	static const Type F16;
+	static const Type BF16;
+	static const Type F8_E2M5;
+	static const Type F8_E3M4;
+	static const Type F8_E4M3;
+	static const Type F8_E5M2;
+	static const Type U8;
 
-  int id;
-  uint8_t bit_size;
+	int id;
+	uint8_t bit_size;
 
-  constexpr Type(const int v, const size_t bit_size) noexcept : id(v), bit_size(bit_size) {  }
+	constexpr Type(const int v, const size_t bit_size) noexcept : id(v), bit_size(bit_size) {}
 
-  ~Type() noexcept = default;
+	~Type() noexcept = default;
 
-  constexpr operator int() const noexcept { return id; }
+	constexpr operator int() const noexcept { return id; } // NOLINT(*-explicit-constructor, *-const-return-type)
 
-  [[nodiscard]] constexpr std::string_view name() const {
-    if (*this == Type::F32) return "F32";
-    if (*this == Type::F16) return "F16";
-    if (*this == Type::BF16) return "BF16";
-    if (*this == Type::F8_E2M5) return "F8_E2M5";
-    if (*this == Type::F8_E3M4) return "F8_E3M4";
-    if (*this == Type::F8_E4M3) return "F8_E4M3";
-    if (*this == Type::F8_E5M2) return "F8_E5M2";
-    if (*this == Type::U8) return "U8";
-    if (*this == Type::QI4) return "QF4";
-    return "UNKNOWN";
-  }
+	[[nodiscard]] constexpr std::string_view name() const {
+		if (*this == Type::F32)
+			return "F32";
+		if (*this == Type::F16)
+			return "F16";
+		if (*this == Type::BF16)
+			return "BF16";
+		if (*this == Type::F8_E2M5)
+			return "F8_E2M5";
+		if (*this == Type::F8_E3M4)
+			return "F8_E3M4";
+		if (*this == Type::F8_E4M3)
+			return "F8_E4M3";
+		if (*this == Type::F8_E5M2)
+			return "F8_E5M2";
+		if (*this == Type::U8)
+			return "U8";
+		return "UNKNOWN";
+	}
 
-  [[nodiscard]] constexpr size_t byte_offset(const std::size_t offset) const {
-    if (*this == Type::F32) return offset * sizeof(float32_t);
-    if (*this == Type::F16) return offset * sizeof(float16_t);
-    if (*this == Type::BF16) return offset * sizeof(bfloat16_t);
-    if (*this == Type::F8_E2M5) return offset * sizeof(uint8_t);
-    if (*this == Type::F8_E3M4) return offset * sizeof(uint8_t);
-    if (*this == Type::F8_E4M3) return offset * sizeof(uint8_t);
-    if (*this == Type::F8_E5M2) return offset * sizeof(uint8_t);
-    if (*this == Type::U8) return offset * sizeof(uint8_t);
-    if (*this == Type::QI4) return offset * sizeof(uint8_t) / 2;
-    return 0;
-  }
+	[[nodiscard]] constexpr size_t byte_offset(const std::size_t offset) const {
+		if (*this == Type::F32)
+			return offset * sizeof(float32_t);
+		if (*this == Type::F16)
+			return offset * sizeof(float16_t);
+		if (*this == Type::BF16)
+			return offset * sizeof(bfloat16_t);
+		if (*this == Type::F8_E2M5)
+			return offset * sizeof(uint8_t);
+		if (*this == Type::F8_E3M4)
+			return offset * sizeof(uint8_t);
+		if (*this == Type::F8_E4M3)
+			return offset * sizeof(uint8_t);
+		if (*this == Type::F8_E5M2)
+			return offset * sizeof(uint8_t);
+		if (*this == Type::U8)
+			return offset * sizeof(uint8_t);
+		return 0;
+	}
 
-  [[nodiscard]] constexpr const void* data_ptr(const void* data, const std::size_t offset) const {
-    return static_cast<const uint8_t*>(data) + byte_offset(offset);
-  }
+	[[nodiscard]] constexpr const void* data_ptr(const void* data, const std::size_t offset) const {
+		return static_cast<const uint8_t*>(data) + byte_offset(offset);
+	}
 
-  [[nodiscard]] float32_t get_float(const void* data, const std::size_t offset) const {
-    auto d = data_ptr(data, offset);
+	[[nodiscard]] float32_t get_float(const void* data, const std::size_t offset) const {
+		auto d = data_ptr(data, offset);
 
-    if (id == Type::F32.id) return *static_cast<const float32_t*>(d);
-    if (id == Type::F16.id) return *static_cast<const float16_t*>(d);
-    if (id == Type::BF16.id) return bf16_to_f32(*static_cast<const uint16_t*>(d));
-    if (id == Type::F8_E2M5.id) return f8e2m5_t::to_float(*static_cast<const f8e2m5_t*>(d));
-    if (id == Type::F8_E3M4.id) return f8e3m4_t::to_float(*static_cast<const f8e3m4_t*>(d));
-    if (id == Type::F8_E4M3.id) return f8e4m3_t::to_float(*static_cast<const f8e4m3_t*>(d));
-    if (id == Type::F8_E5M2.id) return f8e5m2_t::to_float(*static_cast<const f8e5m2_t*>(d));
+		if (id == Type::F32.id)
+			return *static_cast<const float32_t*>(d);
+		if (id == Type::F16.id)
+			return *static_cast<const float16_t*>(d);
+		if (id == Type::BF16.id)
+			return bf16_to_f32(*static_cast<const uint16_t*>(d));
+		if (id == Type::F8_E2M5.id)
+			return f8e2m5_t::to_float(*static_cast<const f8e2m5_t*>(d));
+		if (id == Type::F8_E3M4.id)
+			return f8e3m4_t::to_float(*static_cast<const f8e3m4_t*>(d));
+		if (id == Type::F8_E4M3.id)
+			return f8e4m3_t::to_float(*static_cast<const f8e4m3_t*>(d));
+		if (id == Type::F8_E5M2.id)
+			return f8e5m2_t::to_float(*static_cast<const f8e5m2_t*>(d));
 
-    return 666.66f;
-  }
+		return 666.66f;
+	}
 
-  void set_float(void* data, const std::size_t offset, float32_t value) const {
-    if (id == Type::F32.id) { static_cast<float32_t*>(data)[offset] = value; return;}
-    if (id == Type::F16.id) { static_cast<float16_t*>(data)[offset] = static_cast<float16_t>(value); return; }
-    if (id == Type::BF16.id) { static_cast<uint16_t*>(data)[offset] = f32_to_bf16(value); return; }
-    if (id == Type::F8_E2M5.id) { static_cast<f8e2m5_t*>(data)[offset] = f8e2m5_t::from(value); return; }
-    if (id == Type::F8_E3M4.id) { static_cast<f8e3m4_t*>(data)[offset] = f8e3m4_t::from(value); return; }
-    if (id == Type::F8_E4M3.id) { static_cast<f8e4m3_t*>(data)[offset] = f8e4m3_t::from(value); return; }
-    if (id == Type::F8_E5M2.id) { static_cast<f8e5m2_t*>(data)[offset] = f8e5m2_t::from(value); return; }
-    throw std::invalid_argument("Invalid type");
-  }
+	void set_float(void* data, const std::size_t offset, float32_t value) const {
+		if (id == Type::F32.id) {
+			static_cast<float32_t*>(data)[offset] = value;
+			return;
+		}
+		if (id == Type::F16.id) {
+			static_cast<float16_t*>(data)[offset] = static_cast<float16_t>(value);
+			return;
+		}
+		if (id == Type::BF16.id) {
+			static_cast<uint16_t*>(data)[offset] = f32_to_bf16(value);
+			return;
+		}
+		if (id == Type::F8_E2M5.id) {
+			static_cast<f8e2m5_t*>(data)[offset] = f8e2m5_t::from(value);
+			return;
+		}
+		if (id == Type::F8_E3M4.id) {
+			static_cast<f8e3m4_t*>(data)[offset] = f8e3m4_t::from(value);
+			return;
+		}
+		if (id == Type::F8_E4M3.id) {
+			static_cast<f8e4m3_t*>(data)[offset] = f8e4m3_t::from(value);
+			return;
+		}
+		if (id == Type::F8_E5M2.id) {
+			static_cast<f8e5m2_t*>(data)[offset] = f8e5m2_t::from(value);
+			return;
+		}
+		throw std::invalid_argument("Invalid type");
+	}
 
-  [[nodiscard]] static Type parse(const std::string_view str) {
-    auto to_upper = [](const std::string_view s) -> std::string {
-      std::string result(s);
-      std::ranges::transform(result, result.begin(),
-                             [](const unsigned char c) { return std::toupper(c); });
-      return result;
-    };
+	[[nodiscard]] static Type parse(const std::string_view str) {
+		auto to_upper = [](const std::string_view s) -> std::string {
+			std::string result(s);
+			std::ranges::transform(result, result.begin(), [](const unsigned char c) { return std::toupper(c); });
+			return result;
+		};
 
-    const auto type_str = to_upper(str);
+		const auto type_str = to_upper(str);
 
-    if (type_str == "F32") return Type::F32;
-    if (type_str == "F16") return Type::F16;
-    if (type_str == "BF16") return Type::BF16;
-    if (type_str == "F8.E2M5") return Type::F8_E2M5;
-    if (type_str == "F8.E3M4") return Type::F8_E3M4;
-    if (type_str == "F8.E4M3") return Type::F8_E4M3;
-    if (type_str == "F8.E5M2") return Type::F8_E5M2;
-    if (type_str == "U8") return Type::U8;
-    if (type_str == "QF4") return Type::QI4;
-    return Type::Unknown;
-  }
+		if (type_str == "F32")
+			return Type::F32;
+		if (type_str == "F16")
+			return Type::F16;
+		if (type_str == "BF16")
+			return Type::BF16;
+		if (type_str == "F8_E2M5")
+			return Type::F8_E2M5;
+		if (type_str == "F8_E3M4")
+			return Type::F8_E3M4;
+		if (type_str == "F8_E4M3")
+			return Type::F8_E4M3;
+		if (type_str == "F8_E5M2")
+			return Type::F8_E5M2;
+		if (type_str == "U8")
+			return Type::U8;
 
-  constexpr bool operator==(const Type& other) const {
-    return id == other.id;
-  }
+		console::print("\nERROR: invalid type: {}\n", type_str);
+		assert(false && "invalid type");
+		return Type::Unknown;
+	}
 
-  constexpr bool operator!=(const Type& other) const {
-    return id != other.id;
-  }
+	constexpr bool operator==(const Type& other) const { return id == other.id; }
+	constexpr bool operator!=(const Type& other) const { return id != other.id; }
 };
 
 constexpr Type Type::Unknown{0, 0};
@@ -328,21 +337,384 @@ constexpr Type Type::F8_E3M4{5, sizeof(uint8_t) * 8};
 constexpr Type Type::F8_E4M3{6, sizeof(uint8_t) * 8};
 constexpr Type Type::F8_E5M2{7, sizeof(uint8_t) * 8};
 constexpr Type Type::U8{8, sizeof(uint8_t) * 8};
-constexpr Type Type::QI4{9, sizeof(uint8_t) * 4};
 
 struct qi8_t {
-  static constexpr int block_length = 8;
-  static constexpr int block_size = sizeof(uint32_t) * 2;
+	static constexpr int block_length = 8;
+	static constexpr int block_size = sizeof(uint32_t) * 2;
 
-  static void store_f32(uint8_t* data, const size_t index, const float32_t value) {
-    const auto d = reinterpret_cast<int8_t*>(data);
-    d[index] = static_cast<int8_t>(std::round(std::clamp(value * 8.0f, -128.0f, 127.0f)));
-  }
+	static void store_f32(uint8_t* data, const size_t index, const float32_t value) {
+		const auto d = reinterpret_cast<int8_t*>(data);
+		d[index] = static_cast<int8_t>(std::round(std::clamp(value * 8.0f, -128.0f, 127.0f)));
+	}
 
-  static float32_t load_f32(const uint8_t* data, const size_t index) {
-    const auto q = reinterpret_cast<const int8_t*>(data)[index];
-    return static_cast<float32_t>(q) / 8.0f;
-  }
+	static float32_t load_f32(const uint8_t* data, const size_t index) {
+		const auto q = reinterpret_cast<const int8_t*>(data)[index];
+		return static_cast<float32_t>(q) / 8.0f;
+	}
 };
 
+// A helper template to select a type based on an index
+template<size_t Index, typename... Types>
+struct conditional_select;
 
+template<size_t Index, typename First, typename... Rest>
+struct conditional_select<Index, First, Rest...> {
+	using type = typename conditional_select<Index - 1, Rest...>::type;
+};
+
+template<typename First, typename... Rest>
+struct conditional_select<0, First, Rest...> {
+	using type = First;
+};
+
+template<size_t Index, typename... Types>
+using conditional_select_t = typename conditional_select<Index, Types...>::type;
+
+
+template<typename ScalarType, int Size>
+struct Bundle {
+	using scalar_t = ScalarType;
+	static constexpr size_t size = Size;
+};
+
+template<>
+struct Bundle<float16_t, 1> {
+	using bundle_t = float16_t;
+};
+
+template<>
+struct Bundle<float16_t, 4> {
+	using bundle_t = float16x4_t;
+};
+
+template<>
+struct Bundle<float16_t, 8> {
+	using bundle_t = float16x8_t;
+};
+
+template<>
+struct Bundle<float32_t, 1> {
+	using bundle_t = float32_t;
+};
+
+template<>
+struct Bundle<float32_t, 4> {
+	using bundle_t = float32x4_t;
+};
+
+[[maybe_unused]] static int8x16_t vld1q(const int8_t* src) { return vld1q_s8(src); }
+[[maybe_unused]] static uint8x16_t vld1q(const uint8_t* src) { return vld1q_u8(src); }
+[[maybe_unused]] static int16x8_t vld1q(const int16_t* src) { return vld1q_s16(src); }
+[[maybe_unused]] static uint16x8_t vld1q(const uint16_t* src) { return vld1q_u16(src); }
+[[maybe_unused]] static int32x4_t vld1q(const int32_t* src) { return vld1q_s32(src); }
+[[maybe_unused]] static uint32x4_t vld1q(const uint32_t* src) { return vld1q_u32(src); }
+[[maybe_unused]] static int64x2_t vld1q(const int64_t* src) { return vld1q_s64(src); }
+[[maybe_unused]] static uint64x2_t vld1q(const uint64_t* src) { return vld1q_u64(src); }
+[[maybe_unused]] static float16x8_t vld1q(const float16_t* src) { return vld1q_f16(src); }
+[[maybe_unused]] static float32x4_t vld1q(const float32_t* src) { return vld1q_f32(src); }
+[[maybe_unused]] static float64x2_t vld1q(const float64_t* src) { return vld1q_f64(src); }
+
+template<typename ScalarType, int Size>
+static typename Bundle<ScalarType, Size>::bundle_t load(const ScalarType* src) {
+	return vld1q(&src[0]);
+}
+/*
+[[maybe_unused]] inline void lllllal() {
+	[[maybe_unused]] auto s = Bundle<float, 2>::size;
+
+	[[maybe_unused]] Bundle<float16_t, 4>::bundle_t xy = {};
+
+	const float* data;
+
+	auto d = load<float16_t, 4>(data);
+}*/
+
+
+constexpr float constexpr_exp2(const int exponent) {
+	float result = 1.0f;
+	if (exponent > 0) {
+		for (int i = 0; i < exponent; ++i) {
+			result *= 2.0f;
+		}
+	} else if (exponent < 0) {
+		for (int i = 0; i > exponent; --i) {
+			result /= 2.0f;
+		}
+	}
+	return result;
+}
+
+constexpr float constexpr_log2(const float x) {
+	if (x <= 0.0f)
+		return std::numeric_limits<float>::quiet_NaN(); // log2(0) or log2(negative) is undefined
+	if (x == 1.0f)
+		return 0.0f; // log2(1) = 0
+
+	// Use a simple iterative approximation (Newton-Raphson method)
+	float y = 0.0f;
+	float z = x;
+	while (z >= 2.0f) {
+		z /= 2.0f;
+		y += 1.0f;
+	}
+	while (z < 1.0f) {
+		z *= 2.0f;
+		y -= 1.0f;
+	}
+
+	// Refine the result using Newton-Raphson iterations
+	for (int i = 0; i < 4; ++i) {
+		float exp_y = constexpr_exp2(y);
+		y -= (exp_y - z) / (exp_y * 0.69314718056f); // 0.69314718056f = ln(2)
+	}
+
+	return y;
+}
+
+// Standard mantissa mapping presets
+template<uint8_t M>
+consteval auto linear_mapping() {
+	std::array<float, 1 << M> mapping{};
+	for (uint8_t i = 0; i < (1 << M); ++i) {
+		mapping[i] = 1.0f + static_cast<float>(i) * constexpr_exp2(-static_cast<float>(M));
+	}
+	return mapping;
+}
+
+template<uint8_t M>
+consteval auto logarithmic_mapping(const float min = 1.0f, const float max = 10.0f) {
+	std::array<float, 1 << M> mapping{};
+	const float log_min = constexpr_log2(min);
+	const float log_max = constexpr_log2(max);
+	const float step = (log_max - log_min) / ((1 << M) - 1);
+
+	for (uint8_t i = 0; i < (1 << M); ++i) {
+		mapping[i] = constexpr_exp2(log_min + i * step);
+	}
+	return mapping;
+}
+
+template<uint8_t M>
+consteval auto piecewise_linear_mapping(const std::array<float, 2>& ranges = {1.0f, 4.0f},
+										const std::array<float, 2>& slopes = {1.0f, 0.5f}) {
+	std::array<float, 1 << M> mapping{};
+	const float breakpoint = ranges[0];
+	const float total_range = (ranges[1] - ranges[0]) * slopes[0] + (mapping.size() - breakpoint) * slopes[1];
+	const float norm = (mapping.size() - 1) / total_range;
+
+	float acc = 0.0f;
+	for (uint8_t i = 0; i < (1 << M); ++i) {
+		if (i < breakpoint) {
+			acc += slopes[0];
+		} else {
+			acc += slopes[1];
+		}
+		mapping[i] = acc * norm;
+	}
+	return mapping;
+}
+
+template<uint8_t E, uint8_t M, bool Denormals = true, bool NaNs = true, int Bias = (E ? (1 << (E - 1)) - 1 : 0),
+		 std::array<float, 1 << M> MantissaMapping = linear_mapping<M>()>
+	requires((E + M + 1 <= 16) && (E == 0 || M > 0))
+struct custom_float {
+private:
+	uint16_t bits = 0;
+	explicit constexpr custom_float(uint16_t bits) noexcept : bits(bits) {}
+
+	static constexpr size_t TOTAL_BITS = E + M + 1;
+	static constexpr int EXP_MAX = NaNs ? (1 << E) - 2 : (1 << E) - 1;
+	static constexpr float MAX_NORMAL = MantissaMapping.back() * constexpr_exp2(EXP_MAX - Bias);
+	static constexpr float MIN_NORMAL = MantissaMapping[0] * constexpr_exp2(1 - Bias);
+	static constexpr float MIN_DENORMAL = Denormals ? constexpr_exp2(static_cast<float>(1 - Bias - M)) : 0.0f;
+
+public:
+	static constexpr custom_float from(float value) noexcept {
+		if constexpr (NaNs) {
+			if (std::isnan(value))
+				return create_nan(std::signbit(value));
+		}
+
+		const bool sign = std::signbit(value);
+		value = std::abs(value);
+
+		if (value == 0.0f)
+			return custom_float(sign << (E + M));
+		if (value >= MAX_NORMAL)
+			return create_inf(sign);
+
+		if (value < MIN_NORMAL) {
+			if constexpr (Denormals) {
+				return create_denormal(sign, value);
+			} else {
+				return custom_float(sign << (E + M));
+			}
+		}
+
+		return create_normal(sign, value);
+	}
+
+	static constexpr float to_float(custom_float val) noexcept {
+		const bool sign = val.bits >> (E + M);
+		const uint8_t exp = (val.bits >> M) & ((1 << E) - 1);
+		const uint8_t mant = val.bits & ((1 << M) - 1);
+
+		if constexpr (NaNs) {
+			if (exp == (1 << E) - 1)
+				return sign ? -std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::quiet_NaN();
+		}
+
+		if (exp == EXP_MAX + (NaNs ? 0 : 1)) {
+			return sign ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
+		}
+
+		if (exp == 0) {
+			if constexpr (Denormals) {
+				return sign ? -(mant * MIN_DENORMAL) : mant * MIN_DENORMAL;
+			} else {
+				return sign ? -0.0f : 0.0f;
+			}
+		}
+
+		return sign ? -MantissaMapping[mant] * std::exp2(exp - Bias) : MantissaMapping[mant] * std::exp2(exp - Bias);
+	}
+
+	static constexpr bool is_nan(auto x) noexcept {
+		auto bits = x.bits;
+		if constexpr (NaNs) {
+			const uint8_t exp = (bits >> M) & ((1 << E) - 1);
+			const uint8_t mant = bits & ((1 << M) - 1);
+			return (exp == ((1 << E) - 1)) && (mant != 0);
+		}
+		return false;
+	}
+
+	static constexpr bool is_inf(auto x) noexcept {
+		auto bits = x.bits;
+		const uint8_t exp = (bits >> M) & ((1 << E) - 1);
+		const uint8_t mant = bits & ((1 << M) - 1);
+		return (exp == ((1 << E) - 1)) && (mant == 0);
+	}
+
+	static constexpr bool is_denorm(auto x) noexcept {
+		auto bits = x.bits;
+
+		if constexpr (Denormals) {
+			const uint8_t exp = (bits >> M) & ((1 << E) - 1);
+			return (exp == 0) && (bits != 0);
+		}
+		return false;
+	}
+
+	static constexpr std::string describe() {
+		std::string s;
+
+		// Format description
+		s += std::format("Custom Floating-Point Format: f{}e{}m{}\n", TOTAL_BITS, E, M);
+		s += std::format("  Bias: {}\n", Bias);
+		s += std::format("  Denormals: {}\n", Denormals);
+		s += std::format("  NaNs: {}\n", NaNs);
+		s += "\n";
+
+		// Bit layout
+		s += "Bit Layout:\n";
+		s += std::format("  [S:1|E:{}|M:{}]\n", E, M);
+		s += "  S = Sign bit (0=positive, 1=negative)\n";
+		s += std::format("  E = Exponent bits (biased by {})\n", Bias);
+		s += "  M = Mantissa bits\n";
+		s += "\n";
+
+		// Value ranges
+		s += "Value Ranges:\n";
+		s += std::format("  Minimum Normal: {:.4f}\n", MIN_NORMAL);
+		s += std::format("  Maximum Normal: {:.4f}\n", MAX_NORMAL);
+		if constexpr (Denormals) {
+			s += std::format("  Minimum Denormal: {:.4f}\n", MIN_DENORMAL);
+		}
+		s += "\n";
+
+		// Special values
+		s += "Special Values:\n";
+		s += std::format("  Zero: {}\n", to_float(custom_float(0)));
+		s += std::format("  Negative Zero: {}\n", to_float(custom_float(1 << (E + M))));
+		if constexpr (NaNs) {
+			s += std::format("  NaN: {}\n", to_float(custom_float((1 << (E + M)) | ((1 << E) - 1) << M | 1)));
+		}
+		// s += std::format("  +Infinity: {}\n", to_float(custom_float((1 << E) - 1) << M));
+		// s += std::format("  -Infinity: {}\n", to_float(custom_float((1 << (E + M)) | ((1 << E) - 1) << M)));
+		s += "\n";
+
+		auto fmt = [](auto i, auto val) {
+			auto flags = val.is_denorm(val) ? " (d)" : "";
+			return std::format("{:<22}", std::format("0x{:02x}: {:.4f}{}", i, to_float(val), flags));
+		};
+
+		// All encodings
+		s += "All Encodings:\n";
+		constexpr size_t total_encodings = 1 << TOTAL_BITS;
+		for (size_t i = 0; i < total_encodings; i += 4) {
+			// First column
+			custom_float val1(i);
+			s += fmt(i, val1);
+
+			// Second column (if exists)
+			if (i + 1 < total_encodings) {
+				custom_float val2(i + 1);
+				s += fmt(i + 1, val2);
+			}
+
+			// Third column (if exists)
+			if (i + 2 < total_encodings) {
+				custom_float val3(i + 2);
+				s += fmt(i + 2, val3);
+			}
+
+			// Third column (if exists)
+			if (i + 3 < total_encodings) {
+				custom_float val4(i + 3);
+				s += fmt(i + 3, val4);
+			}
+
+			s += "\n";
+		}
+
+		return s;
+	}
+
+private:
+	static constexpr custom_float create_inf(bool sign) noexcept {
+		return custom_float((sign << (E + M)) | ((EXP_MAX + 1) << M));
+	}
+
+	static constexpr custom_float create_nan(bool sign) noexcept {
+		return custom_float((sign << (E + M)) | ((EXP_MAX + 1) << M) | 1);
+	}
+
+	static constexpr custom_float create_denormal(bool sign, float value) noexcept {
+		const float scaled = value / MIN_DENORMAL;
+		const uint8_t mant = static_cast<uint8_t>(std::min(scaled, (1 << M) - 1.0f));
+		return custom_float((sign << (E + M)) | mant);
+	}
+
+	static constexpr custom_float create_normal(bool sign, float value) noexcept {
+		int exp = std::ilogb(value) + Bias;
+		exp = std::clamp(exp, 1, EXP_MAX);
+		const float scaled = std::scalbn(value, -exp);
+		uint8_t mant = find_closest_mantissa(scaled);
+		return custom_float((sign << (E + M)) | (exp << M) | mant);
+	}
+
+	static constexpr uint8_t find_closest_mantissa(float value) noexcept {
+		uint8_t best = 0;
+		float best_diff = std::abs(value - MantissaMapping[0]);
+		for (uint8_t i = 1; i < MantissaMapping.size(); ++i) {
+			const float diff = std::abs(value - MantissaMapping[i]);
+			if (diff < best_diff)
+				best = i, best_diff = diff;
+		}
+		return best;
+	}
+
+	template<typename>
+	static constexpr bool dependent_false = false;
+};

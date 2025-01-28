@@ -1,9 +1,5 @@
 #include "sampler.h"
 
-Sampler::Sampler(const std::shared_ptr<Config> config) noexcept {
-  vocab_size = config->vocab_size;
-}
-
 float Sampler::sample_prob(const int index, const InferenceState& s) const {
   const float* logits = s.logits();
   // Find max value to moderate the logits later on for numerical stability

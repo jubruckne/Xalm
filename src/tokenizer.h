@@ -1,11 +1,12 @@
 #pragma once
 
 #include "tensor.h"
+#include "xalm.h"
 
 #include <memory>
 #include <string>
-#include <vector>
 #include <unordered_map>
+#include <vector>
 
 struct TokenTrie;
 
@@ -64,7 +65,7 @@ struct Tokenizer {
   // TODO: use constexpr?
   std::string byte_pieces[256];
 
-  Tokenizer(const YALMData& data);
+  Tokenizer(const Xalm::file_info& data);
 
   std::vector<int> encode(const std::string& text, bool encode_bos) const;
   std::string decode_one(int prev_token, int token) const;
