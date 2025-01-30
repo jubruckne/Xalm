@@ -6,6 +6,7 @@
 #include "json.hpp"
 #include "types.h"
 #include "xalm.h"
+#include "task_pool.h"
 
 using json = nlohmann::json;
 
@@ -46,10 +47,24 @@ void Block::block(const Config& config,
 }
 
 Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
+	system_usage::scoped su{"Model::from_xalm"};
 	auto config = Config::from_xalm(xalm, context);
-	printf("loading model...\n");
 
-	auto load_tensor = [&xalm](const std::string& name, const std::vector<int>& expected_shape = {}) -> Tensor {
+	[[maybe_unused]] auto load_tensor_data = task_pool<Xalm::tensor_info, std::span<std::byte>>{
+		2,
+		[](Xalm::tensor_info ti, std::span<std::byte> buffer) {
+			if (buffer.size() != ti.size) {
+				throw std::runtime_error("YAML buffer size mismatch");
+			}
+
+			console::print("loading tensor {}:{} - offset: {}, size: {}\n", ti.file_name, ti.name, ti.offset, ti.size);
+			auto stream = std::ifstream(ti.file_name, std::ios::binary);
+			stream.seekg(static_cast<std::streamoff>(ti.offset), std::ios::beg);
+			stream.read(reinterpret_cast<char*>(&buffer.front()), static_cast<std::streamoff>(ti.size));
+		},
+		true};
+
+	auto load_tensor = [&xalm, &load_tensor_data](const std::string& name, const std::vector<int>& expected_shape = {}) -> Tensor {
 		const auto ti = xalm.tensors.at(name);
 
 		if (!expected_shape.empty()) {
@@ -66,7 +81,7 @@ Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
 		}
 
 		auto tensor = Tensor::zeroes(ti.type, ti.shape, ti.name);
-		xalm.load_tensor_data(ti, tensor.get_buffer()->span());
+		load_tensor_data(ti, tensor.get_buffer()->span<std::byte>());
 		return tensor;
 	};
 
@@ -74,7 +89,10 @@ Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
 	std::vector<Block> blocks;
 	blocks.reserve(config.n_layers);
 
+	ProgressBar progress(config.n_layers);
+
 	for (int i = 0; i < config.n_layers; ++i) {
+		progress.step(std::format("loading layer {}...", i));
 		blocks.emplace_back(
 			i,
 			load_tensor(fmt::format("l.{}.attn.norm.weight", i),{config.dim}),
@@ -89,12 +107,24 @@ Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
 			new float16_t[config.max_seq_len * config.n_kv_heads * config.head_dim],
 			new float16_t[config.max_seq_len * config.n_kv_heads * config.head_dim]
 		);
+		// std::this_thread::sleep_for(std::chrono::milliseconds(125));
 	}
+
+	progress.done(std::format("{} layers loaded", config.n_layers));
 
 	auto rms_final_weight = load_tensor("output.norm.weight",{config.dim});
 	auto wcls = config.tie_word_embeddings
 		? load_tensor("embed.weight",{config.vocab_size, config.dim})
 		: load_tensor("output.weight",{config.vocab_size, config.dim});
+
+	console::print("total: {}\n", load_tensor_data.get_total());
+	console::print("finished: {}\n", load_tensor_data.get_finished());
+	console::print("remaining: {}\n", load_tensor_data.get_remaining());
+	load_tensor_data.wait();
+	console::print("total: {}\n", load_tensor_data.get_total());
+	console::print("finished: {}\n", load_tensor_data.get_finished());
+	console::print("remaining: {}\n", load_tensor_data.get_remaining());
+
 
 	return Model{config, token_embedding_table, blocks, rms_final_weight, wcls};
 }

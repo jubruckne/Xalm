@@ -8,7 +8,6 @@
 #include "profiler.h"
 #include "types.h"
 
-
 [[maybe_unused]] static void matmul(float *__restrict__ xout, const float *__restrict__ x, const float *__restrict__ w,
 									const int n, const int d) noexcept {
 	// W (d,n) @ x (n,) -> xout (d,)
@@ -85,6 +84,11 @@ template<>
 consteval std::string_view type_name<f8e2m5_t>() {
 	return "f8e2m5_t";
 }
+
+#include <arm_neon.h>
+
+template<typename T>
+concept RmsNormType = std::is_same_v<T, float32_t> || std::is_same_v<T, bfloat16_t>;
 
 template<typename T>
 concept NativeTypes = std::is_same_v<T, float32_t> || std::is_same_v<T, float16_t>;
@@ -208,7 +212,7 @@ void matmul(const Tensor& xout, const Tensor& a, const Tensor& b) noexcept {
 	matmul(xout.get_buffer()->get<float>(), a.get_buffer()->get<float>(), b, n, d);
 }
 
-static void rmsnorm(float* o, const float* x, const float* weight, const int size, const float eps) {
+static void rmsnorm(float* o, const float* x, const RmsNormType auto* weight, const int size, const float eps)  {
 	profile();
 
 	float rms = 0.0f;
@@ -219,6 +223,21 @@ static void rmsnorm(float* o, const float* x, const float* weight, const int siz
 	const float scale = 1.0f / rms;
 	for (int i = 0; i < size; ++i) {
 		o[i] = x[i] * scale * weight[i];
+	}
+}
+
+static void rmsnorm(float* o, const float* x, const Tensor& w, const int size, const float eps) {
+	switch (w.type) {
+		case Type::F32: {
+			rmsnorm(o, x, w.get_data<float32_t>(), size, eps);
+			return;
+		}
+		case Type::BF16: {
+			rmsnorm(o, x, w.get_data<bfloat16_t>(), size, eps);
+			return;
+		}
+		default:
+			throw std::runtime_error("rmsnorm: unsupported data type");
 	}
 }
 
@@ -348,8 +367,7 @@ void Block::_block_cpu(const Config& config,
 	// attention pre-norm
 	switch (config.norm_type) {
 		case LayerNormType::RMSNorm: {
-			assert(rms_att_weight.type == Type::F32);
-			rmsnorm(s.xb(), s.x(), rms_att_weight.get_buffer()->get<float>(), config.dim, config.norm_eps);
+			rmsnorm(s.xb(), s.x(), rms_att_weight, config.dim, config.norm_eps);
 			break;
 		}
 		default: {
@@ -431,8 +449,7 @@ void Block::_block_cpu(const Config& config,
 	// ffn pre-norm
 	switch (config.norm_type) {
 		case LayerNormType::RMSNorm: {
-			assert(rms_ffn_weight.type == Type::F32);
-			rmsnorm(s.xb(), s.x(), rms_ffn_weight.get_buffer()->get<float>(), config.dim, config.norm_eps);
+			rmsnorm(s.xb(), s.x(), rms_ffn_weight, config.dim, config.norm_eps);
 			break;
 		}
 		default: {
@@ -593,8 +610,7 @@ void Model::_forward_cpu(const InferenceState &s, const int token, const int pos
 	// final layer norm
 	switch (config.norm_type) {
 		case LayerNormType::RMSNorm: {
-			assert(rms_final_weight.type == Type::F32);
-			rmsnorm(s.x(), s.x(), rms_final_weight.get_buffer()->get<const float>(), config.dim, config.norm_eps);
+			rmsnorm(s.x(), s.x(), rms_final_weight, config.dim, config.norm_eps);
 			break;
 		}
 		default: {

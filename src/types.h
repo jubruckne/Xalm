@@ -1,7 +1,5 @@
 #pragma once
 #include "console.h"
-
-
 #include <cassert>
 #include <cstdint>
 

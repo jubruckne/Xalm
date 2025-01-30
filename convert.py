@@ -9,7 +9,9 @@ import argparse
 import ctypes
 import os
 import json
+import re
 import sys
+from collections import OrderedDict
 from enum import Enum
 from urllib.parse import urljoin
 
@@ -595,12 +597,10 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
 
         progress += 1
         actual_type = target_type
-        if conv_name == "embed.weight" or conv_name == "output.weight" or "l.1" in conv_name:
+        if conv_name == "embed.weight" or conv_name == "output.weight":
             actual_type = XType.f16
-        if conv_name == "embed.weight" or conv_name == "output.weight" or "l.0" in conv_name:
-            actual_type = XType.bf16
 
-        if len(t.shape) == 1:
+        if len(t.shape) == 1 and t.dtype != torch.bfloat16:
             actual_type = XType.f32
 
         v_range = torch.max(t) - torch.min(t)
@@ -672,19 +672,17 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
 
         conv(f"model.layers.{l}.self_attn.q_proj.weight")
         conv(f"model.layers.{l}.self_attn.k_proj.weight")
-
         conv(f"model.layers.{l}.self_attn.v_proj.weight")
         conv(f"model.layers.{l}.self_attn.o_proj.weight")
-
         conv(f"model.layers.{l}.post_attention_layernorm.weight")
 
         conv(f"model.layers.{l}.mlp.gate_proj.weight")
         conv(f"model.layers.{l}.mlp.down_proj.weight")
         conv(f"model.layers.{l}.mlp.up_proj.weight")
 
-    conv("model.norm.weight")
     if not tie_word_embeddings:
         conv("lm_head.weight")
+    conv("model.norm.weight")
 
     return tensors
 
@@ -819,6 +817,59 @@ def download_model(url: str, token: str = None) -> dict:
 
     return downloaded_files
 
+def sort_tensors(tensors: dict) -> OrderedDict:
+    """
+    Sorts the tensors according to the specified order and returns an OrderedDict.
+    """
+    ordered_keys = []
+    layer_keys = {}
+
+    # Regex pattern to extract layer numbers
+    layer_pattern = re.compile(r"l\.(\d+)\.")
+
+    for key in tensors.keys():
+        if key == "embed.weight":
+            ordered_keys.insert(0, key)  # Embed weight first
+        elif key == "output.weight":
+            continue  # Handle this separately to place it before output.norm.weight
+        elif key == "output.norm.weight":
+            continue  # Handle this separately to place it before tokenizer.tokens
+        elif key == "tokenizer.tokens":
+            continue  # Handle this separately to place it last
+        else:
+            match = layer_pattern.search(key)
+            assert match
+            layer_num = int(match.group(1))
+            if layer_num not in layer_keys:
+                layer_keys[layer_num] = []
+            layer_keys[layer_num].append(key)
+
+    # Sorting within each layer
+    layer_order = [
+        "attn.norm.weight",
+        "mlp.norm.weight",
+        "attn.q.weight",
+        "attn.k.weight",
+        "attn.v.weight",
+        "attn.down.weight",
+        "mlp.gate.weight",
+        "mlp.down.weight",
+        "mlp.up.weight"
+    ]
+
+    for layer_num in sorted(layer_keys.keys(), key=int):  # Ensure numeric sorting
+        sorted_layer = sorted(layer_keys[layer_num], key=lambda k: layer_order.index(k.split(f"l.{layer_num}.")[-1]) if k.split(f"l.{layer_num}.")[-1] in layer_order else 100)
+        ordered_keys.extend(sorted_layer)
+
+    if "output.weight" in tensors:
+        ordered_keys.append("output.weight")
+    if "output.norm.weight" in tensors:
+        ordered_keys.append("output.norm.weight")
+    if "tokenizer.tokens" in tensors:
+        ordered_keys.append("tokenizer.tokens")
+
+    return OrderedDict((key, tensors[key]) for key in ordered_keys)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Convert model files with tokenizer and config, supporting URL input.")
@@ -862,7 +913,8 @@ if __name__ == "__main__":
             for k, v in tensors.items():
                 assert v.layout == torch.strided and v.is_contiguous()
 
-            save_file(tensors, args.output, metadata.to_dict())
+            save_file(sort_tensors(tensors), args.output, metadata.to_dict())
+            print(sort_tensors(tensors).keys())
 
             print(f"saved to {args.output}")
 

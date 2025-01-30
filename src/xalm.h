@@ -11,6 +11,7 @@ struct Xalm {
 		std::string name;
 		Type type;
 		std::vector<int> shape;
+		std::string file_name;
 		size_t offset;
 		size_t size;
 	};
@@ -18,15 +19,15 @@ struct Xalm {
 	struct file_info {
 		std::string file_name;
 		json metadata;
-		std::unordered_map<std::string, tensor_info> tensors;
+		std::map<std::string, tensor_info> tensors;
 
 		void load_tensor_data(const tensor_info& tensor_info, const std::span<std::byte> buffer) const {
 			if (buffer.size() != tensor_info.size) {
 				throw std::runtime_error("YAML buffer size mismatch");
 			}
 
-			stream.seekg(tensor_info.offset, std::ios::beg);
-			stream.read(reinterpret_cast<char*>(&buffer.front()), tensor_info.size);
+			stream.seekg(static_cast<std::streamoff>(tensor_info.offset), std::ios::beg);
+			stream.read(reinterpret_cast<char*>(&buffer.front()), static_cast<std::streamoff>(tensor_info.size));
 		}
 
 		void load_tensor_data(const std::string& name, const std::span<std::byte> buffer) const {
@@ -64,7 +65,7 @@ struct Xalm {
 
 		friend Xalm;
 
-	    file_info(std::string file_name, json metadata, std::unordered_map<std::string, tensor_info> tensors, std::ifstream stream):
+	    file_info(std::string file_name, json metadata, std::map<std::string, tensor_info> tensors, std::ifstream stream):
 			file_name(std::move(file_name)),
 			metadata(std::move(metadata)),
 			tensors(std::move(tensors)),
@@ -72,15 +73,15 @@ struct Xalm {
 	};
 
 	[[nodiscard]] static file_info load(const std::string& file_name) {
-		console::print("loading data from file: {}", file_name);
+		console::print("loading data from file: {}\n", file_name);
 
-		std::unordered_map<std::string, tensor_info> tensors;
+		std::map<std::string, tensor_info> tensors;
 		std::string json_string;
 		json metadata;
 		std::ifstream stream(file_name,std::ios::binary);
-		auto file_size = std::filesystem::file_size(file_name);
+		auto file_size = static_cast<std::streamoff>(std::filesystem::file_size(file_name));
 
-		uint64_t json_size = 0;
+		std::streamoff json_size = 0;
 
 		stream.read(reinterpret_cast<std::istream::char_type *>(&json_size), sizeof(uint64_t));
 		if (json_size == 0 || json_size > file_size - sizeof(uint64_t)) {
@@ -90,15 +91,15 @@ struct Xalm {
 		std::vector<char> buf(json_size + 1, 0);
 		stream.read(buf.data(), static_cast<uint32_t>(json_size));
 
-		size_t data_offset = sizeof(uint64_t) + json_size;
-		size_t data_end = data_offset + file_size;
+		std::streamoff data_offset = static_cast<std::streamoff>(sizeof(uint64_t)) + json_size;
+		std::streamoff data_end = data_offset + file_size;
 
 		json_string = std::string(buf.data());
 
 		const json header = json::parse(json_string);
 
-		std::print("{}", json_string);
-		std::flush(std::cout);
+		//std::print("{}\n", json_string);
+		//std::flush(std::cout);
 
 		for (auto &[key, val]: header.items()) {
 			if (key == "__metadata__") {
@@ -106,7 +107,7 @@ struct Xalm {
 			} else {
 				// Tensor &tensor = tensors[key];
 				printf("tensor: %s\n", key.c_str());
-				printf("tensor: %s\n", val.dump().c_str());
+				// printf("tensor: %s\n", val.dump().c_str());
 
 				auto name = key;
 				auto type_str = val.value("dtype", "");
@@ -127,13 +128,18 @@ struct Xalm {
 					shape[i] = val.at("shape")[i].get<int>();
 				}
 
-				const auto offset_start = static_cast<size_t>(val.at("data_offsets")[0]);
-				const auto offset_end = static_cast<size_t>(val.at("data_offsets")[1]);
+				const auto offset_start = static_cast<std::streamoff>(val.at("data_offsets")[0]);
+				const auto offset_end = static_cast<std::streamoff>(val.at("data_offsets")[1]);
 				if (offset_start < 0 || offset_end <= offset_start || offset_end > data_end) {
 					throw std::invalid_argument(std::format("offset out of range"));
 				}
 
-				tensors.emplace(name, tensor_info{name, type, shape, offset_start + data_offset, offset_end - offset_start});
+				tensors.emplace(
+					name,
+					tensor_info{name, type,shape,file_name,
+						static_cast<size_t>(offset_start + data_offset),
+						static_cast<size_t>(offset_end - offset_start)}
+				);
 			}
 		}
 

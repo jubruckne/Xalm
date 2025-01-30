@@ -51,9 +51,15 @@ public:
 
 	void save_to_csv(const std::string &filename) const;
 
-	[[nodiscard]] const buffer_t* get_buffer() const {
+	[[nodiscard]] const buffer_t* get_buffer() const noexcept {
 		return &buffer;
 	}
+
+	template<typename T>
+	[[nodiscard]] const T* get_data() const noexcept {
+		return buffer.get<T>();
+	}
+
 
 private:
 	buffer_t buffer;

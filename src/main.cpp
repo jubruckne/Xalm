@@ -59,6 +59,9 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 					const int context, int num_steps) {
 	auto model_data = Xalm::load(checkpoint_path);
 	auto model = Model::from_xalm(model_data, context);
+
+	console::print("{}", model_data.format());
+
 	InferenceState state(model.config);
 	Sampler sampler(model.config);
 	Tokenizer tokenizer(model_data);
