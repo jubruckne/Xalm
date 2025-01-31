@@ -7,6 +7,7 @@
 
 import argparse
 import ctypes
+import gc
 import os
 import json
 import re
@@ -609,15 +610,11 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
             else:
                 actual_type = XType.f32
 
-        v_range = torch.max(t) - torch.min(t)
-        r_range = 16.0 / (torch.max(t, 0).values - torch.min(t, 0).values)
-
         if args.analyze:
+            v_range = torch.max(t) - torch.min(t)
+            r_range = 16.0 / (torch.max(t, 0).values - torch.min(t, 0).values)
             print(f"{conv_name}[{t.dtype}, range={v_range:.4f}]")
-        else:
-            print(f"{name:<50}{str(t.dtype).replace("torch.", ""):<8} => {conv_name:<24}{actual_type:<12}")
 
-        if args.analyze:
             for test_type in XType:
                 if test_type == actual_type or name == "embed.weight":
                     continue
@@ -650,6 +647,8 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
                 print()
             print()
         else:
+            print(f"{name:<50}{str(t.dtype).replace("torch.", ""):<8} => {conv_name:<24}{actual_type:<12}")
+
             convt: torch.tensor = XType.convert_to(t, actual_type)
             tensors[conv_name] = convt
 
@@ -664,6 +663,9 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
                 "type": actual_type.name(),
                 "hash": hash_value.intdigest(),
             }
+
+            del t, storage, raw_data
+            gc.collect()
 
     tensors = {}
 
@@ -686,9 +688,13 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
         conv(f"model.layers.{l}.mlp.down_proj.weight")
         conv(f"model.layers.{l}.mlp.up_proj.weight")
 
+        gc.collect()
+
     if not tie_word_embeddings:
         conv("lm_head.weight")
     conv("model.norm.weight")
+
+    gc.collect()
 
     return tensors
 
@@ -991,6 +997,7 @@ if __name__ == "__main__":
             for k, v in tensors.items():
                 assert v.layout == torch.strided and v.is_contiguous()
 
+            gc.collect()
             save_file(sort_tensors(tensors), args.output, metadata.to_dict())
             print(sort_tensors(tensors).keys())
 
