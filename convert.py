@@ -46,6 +46,7 @@ class XType(Enum):
     f4_e2m1 = 6
     qi8 = 7
     qi4 = 8
+    qi3 = 9
 
     # gguf types
     q4_0 = 1007
@@ -79,6 +80,8 @@ class XType(Enum):
             return XType.f8_e5m2
         elif dtype == "f4_e2m1":
             return XType.f4_e2m1
+        elif dtype == "qi3":
+            return XType.qi3
         elif dtype == "qi4":
             return XType.qi4
         elif dtype == "qi8":
@@ -160,6 +163,8 @@ class XType(Enum):
             converted_tensor = quantize_to_f4_e2m1(t.to(torch.float32))
         elif type_to == XType.qi8:
             converted_tensor = quantize_to_qi8(t.to(torch.float32))
+        elif type_to == XType.qi3:
+            converted_tensor = convert_to_3bit(t.to(torch.float32))
         elif type_to == XType.qi4:
             converted_tensor = convert_to_4bit(t.to(torch.float32))
         elif type_to == XType.q4_0:
@@ -282,6 +287,40 @@ def load_tokens(tokenizer_path, vocab_size):
         tokens[i] = b
 
     return tokens
+
+def convert_to_3bit(tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Convert a tensor to 3-bit representation, packing weights efficiently into bytes.
+
+    Assumes the input tensor has values in a known range (e.g., -1 to 1).
+    The tensor size must be a multiple of 8 for optimal packing.
+
+    Parameters:
+        tensor (torch.Tensor): Input tensor (assumed float32).
+
+    Returns:
+        torch.Tensor: Packed tensor in 3-bit format (torch.uint8).
+    """
+    assert tensor.dtype == torch.float32, "Input tensor must be float32"
+
+    # Normalize values from [-1, 1] to [0, 7] for 3-bit storage
+    tensor = torch.clamp(tensor, -1, 1)  # Ensure values are within range
+    tensor = ((tensor + 1) * 3.5).round().to(torch.uint8)  # Scale to 3-bit range (0-7)
+
+    # Ensure tensor length is a multiple of 8 (since we store 8 values in 3 bytes)
+    assert tensor.numel() % 8 == 0, "Tensor size must be a multiple of 8 for efficient 3-bit packing"
+
+    # Packing: 8 values (3 bits each) fit into 3 bytes
+    packed_tensor = (
+        (tensor[::8] << 5) | (tensor[1::8] << 2) | (tensor[2::8] >> 1),  # First byte
+        ((tensor[2::8] & 0x01) << 7) | (tensor[3::8] << 4) | (tensor[4::8] << 1) | (tensor[5::8] >> 2),  # Second byte
+        ((tensor[5::8] & 0x03) << 6) | (tensor[6::8] << 3) | tensor[7::8],  # Third byte
+    )
+
+    # Concatenate into a single packed tensor
+    packed_tensor = torch.stack(packed_tensor, dim=-1).flatten()
+
+    return packed_tensor
 
 def convert_to_4bit(tensor: torch.Tensor) -> torch.Tensor:
     """
