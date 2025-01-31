@@ -754,14 +754,31 @@ def process_input(input_path: str) -> (str, str, []):
         model_files.append(os.path.join(input_path, "model.safetensors"))
         print(f"using {model_files}\n")
     else:
-        files_to_process = [
-            "model-00001-of-00003.safetensors",
-            "model-00002-of-00003.safetensors",
-            "model-00003-of-00003.safetensors"
-        ]
-        for st_f in files_to_process:
-            if os.path.exists(os.path.join(input_path, st_f)):
-                model_files.append(os.path.join(input_path, st_f))
+        if os.path.exists(os.path.join(input_path, "model-00001-of-00003.safetensors")):
+            files_to_process = [
+                "model-00001-of-00003.safetensors",
+                "model-00002-of-00003.safetensors",
+                "model-00003-of-00003.safetensors"
+            ]
+            for st_f in files_to_process:
+                if os.path.exists(os.path.join(input_path, st_f)):
+                    model_files.append(os.path.join(input_path, st_f))
+        elif os.path.exists(os.path.join(input_path, "model-00001-of-00010.safetensors")):
+            files_to_process = [
+                "model-00001-of-00010.safetensors",
+                "model-00002-of-00010.safetensors",
+                "model-00003-of-00010.safetensors",
+                "model-00004-of-00010.safetensors",
+                "model-00005-of-00010.safetensors",
+                "model-00006-of-00010.safetensors",
+                "model-00007-of-00010.safetensors",
+                "model-00008-of-00010.safetensors",
+                "model-00009-of-00010.safetensors",
+                "model-00010-of-00010.safetensors"
+            ]
+            for st_f in files_to_process:
+                if os.path.exists(os.path.join(input_path, st_f)):
+                    model_files.append(os.path.join(input_path, st_f))
 
         print(f"using {model_files}")
         if len(model_files) == 0:
