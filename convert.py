@@ -45,6 +45,7 @@ class XType(Enum):
     f8_e5m2 = 5
     f4_e2m1 = 6
     qi8 = 7
+    qi4 = 8
 
     # gguf types
     q4_0 = 1007
@@ -78,6 +79,8 @@ class XType(Enum):
             return XType.f8_e5m2
         elif dtype == "f4_e2m1":
             return XType.f4_e2m1
+        elif dtype == "qi4":
+            return XType.qi4
         elif dtype == "qi8":
             return XType.qi8
 
@@ -157,6 +160,8 @@ class XType(Enum):
             converted_tensor = quantize_to_f4_e2m1(t.to(torch.float32))
         elif type_to == XType.qi8:
             converted_tensor = quantize_to_qi8(t.to(torch.float32))
+        elif type_to == XType.qi4:
+            converted_tensor = convert_to_4bit(t.to(torch.float32))
         elif type_to == XType.q4_0:
             converted_tensor = torch.from_numpy(gguf_quantize(t.to(torch.float32).numpy(), GGMLQuantizationType.Q4_0))
         elif type_to == XType.q4_1:
@@ -173,8 +178,6 @@ class XType(Enum):
             raise ValueError(f"Unsupported target type: {type_to}")
 
         return converted_tensor
-
-
 
 class Metadata:
     def __init__(self, config):
@@ -279,6 +282,31 @@ def load_tokens(tokenizer_path, vocab_size):
         tokens[i] = b
 
     return tokens
+
+def convert_to_4bit(tensor: torch.Tensor) -> torch.Tensor:
+    """
+    Convert a tensor to 4-bit representation, packing two values per byte.
+
+    Assumes the input tensor has values in a known range (e.g., -1 to 1)
+    and dimensions are multiples of 2.
+
+    Parameters:
+        tensor (torch.Tensor): Input tensor (assumed float32).
+
+    Returns:
+        torch.Tensor: Packed tensor in 4-bit format (torch.uint8).
+    """
+    assert tensor.dtype == torch.float32, "Input tensor must be float32"
+
+    # Normalize values from [-1, 1] to [0, 15] for 4-bit storage
+    tensor = torch.clamp(tensor, -1, 1)  # Ensure values are within range
+    tensor = ((tensor + 1) * 7.5).round().to(torch.uint8)  # Scale to 4-bit range (0-15)
+
+    # Pack two 4-bit values into a single 8-bit byte
+    packed_tensor = (tensor[::2] << 4) | tensor[1::2]  # Shift first value and merge
+
+    return packed_tensor
+
 
 def pack_tensor(tensor: torch.tensor, bits: int, overflow_saturate: bool = False) -> torch.tensor:
     # pack source tensor tightly
