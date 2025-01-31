@@ -649,6 +649,23 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
         w = torch.cat([wr, wk], dim=1)
         return torch.flatten(w, 0, 1)
 
+    def boost_type(org_type: XType, cvt_type: XType) -> XType:
+        if org_type == XType.bf16:
+            if cvt_type == XType.f8_e4m3 or cvt_type == XType.f8_e4m3 or cvt_type == XType.qi8:
+                return XType.bf16
+            if cvt_type == XType.qi3 or cvt_type == XType.qi4:
+                return XType.f8_e5m2
+            return cvt_type
+
+        if org_type == XType.f32 or org_type == XType.f16:
+            if cvt_type == XType.f8_e4m3 or cvt_type == XType.f8_e4m3 or cvt_type == XType.qi8:
+                return XType.f16
+            if cvt_type == XType.qi3 or cvt_type == XType.qi4:
+                return XType.f8_e4m3
+            return cvt_type
+
+        return cvt_type
+
     # convert weights
     progress = 0
     def conv(name: str):
@@ -667,9 +684,11 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
         actual_type = target_type
         if conv_name == "embed.weight" or conv_name == "output.weight":
             if t.dtype == torch.bfloat16:
-                actual_type = XType.bf16
-            else:
-                actual_type = XType.f16
+                actual_type = boost_type(XType.bf16, target_type)
+            elif t.dtype == torch.float16:
+                actual_type = boost_type(XType.f16, target_type)
+            elif t.dtype == torch.float32:
+                actual_type = boost_type(XType.f32, target_type)
 
         if len(t.shape) == 1:
             if t.dtype == torch.bfloat16:
