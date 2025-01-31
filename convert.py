@@ -824,7 +824,7 @@ def download_model(url: str, token: str = None) -> dict:
         downloaded_files[safetensors_file] = safetensors_path
         for safetensors_file in ["model-00002-of-00003.safetensors", "model-00003-of-00003.safetensors"]:
             safetensors_url = urljoin(url + "resolve/main/", tokenizer_file)
-            safetensors_path = os.path.join(temp_dir, tokenizer_file)
+            safetensors_path = os.path.join(temp_dir, safetensors_path)
             if download_file(safetensors_url, safetensors_path, token):
                 downloaded_files[safetensors_file] = safetensors_path
             else:
@@ -839,12 +839,12 @@ def download_model(url: str, token: str = None) -> dict:
     if download_file(safetensors_url, safetensors_path, token):
         downloaded_files[safetensors_file] = safetensors_path
         for safetensors_file in ["model-00002-of-00010.safetensors", "model-00003-of-00010.safetensors",
-                                 "model-00003-of-00010.safetensors", "model-00004-of-00010.safetensors",
-                                 "model-00005-of-00010.safetensors", "model-00006-of-00010.safetensors",
-                                 "model-00007-of-00010.safetensors", "model-00008-of-00010.safetensors",
-                                 "model-00009-of-00010.safetensors", "model-00010-of-00010.safetensors"]:
+                                 "model-00004-of-00010.safetensors", "model-00005-of-00010.safetensors",
+                                 "model-00006-of-00010.safetensors", "model-00007-of-00010.safetensors",
+                                 "model-00008-of-00010.safetensors", "model-00009-of-00010.safetensors",
+                                 "model-00010-of-00010.safetensors"]:
             safetensors_url = urljoin(url + "resolve/main/", tokenizer_file)
-            safetensors_path = os.path.join(temp_dir, tokenizer_file)
+            safetensors_path = os.path.join(temp_dir, safetensors_path)
             if download_file(safetensors_url, safetensors_path, token):
                 downloaded_files[safetensors_file] = safetensors_path
             else:
