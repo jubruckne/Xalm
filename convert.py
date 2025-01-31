@@ -598,10 +598,16 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
         progress += 1
         actual_type = target_type
         if conv_name == "embed.weight" or conv_name == "output.weight":
-            actual_type = XType.f16
+            if t.dtype == torch.bfloat16:
+                actual_type = XType.bf16
+            else:
+                actual_type = XType.f16
 
-        if len(t.shape) == 1 and t.dtype != torch.bfloat16:
-            actual_type = XType.f32
+        if len(t.shape) == 1:
+            if t.dtype == torch.bfloat16:
+                actual_type = XType.bf16
+            else:
+                actual_type = XType.f32
 
         v_range = torch.max(t) - torch.min(t)
         r_range = 16.0 / (torch.max(t, 0).values - torch.min(t, 0).values)
@@ -734,19 +740,19 @@ def process_input(input_path: str) -> (str, str, []):
 
     if os.path.exists(os.path.join(input_path, "config.json")):
         config_file = os.path.join(input_path, "config.json")
-        print(f"using {config_file}")
+        print(f"using {config_file}\n")
     else:
         raise FileNotFoundError("config.json not found")
 
     if os.path.exists(os.path.join(input_path, "tokenizer.json")):
         tokenizer_file = os.path.join(input_path, "tokenizer.json")
-        print(f"using {tokenizer_file}")
+        print(f"using {tokenizer_file}\n")
     else:
         raise FileNotFoundError("tokenizer.json not found")
 
     if os.path.exists(os.path.join(input_path, "model.safetensors")):
         model_files.append(os.path.join(input_path, "model.safetensors"))
-        print(f"using {model_files}")
+        print(f"using {model_files}\n")
     else:
         files_to_process = [
             "model-00001-of-00003.safetensors",
@@ -756,6 +762,7 @@ def process_input(input_path: str) -> (str, str, []):
         for st_f in files_to_process:
             if os.path.exists(os.path.join(input_path, st_f)):
                 model_files.append(os.path.join(input_path, st_f))
+
         print(f"using {model_files}")
         if len(model_files) == 0:
             raise FileNotFoundError("no model files found!")
@@ -772,9 +779,9 @@ def download_model(url: str, token: str = None) -> dict:
     if not(url.startswith("http://") or url.startswith("https://")):
         raise Exception(f"Invalid URL: {url}")
 
-    print(f"Download model from: {url}...")
+    print(f"Download model from: {url}...\n")
     model_name = url.strip("/").split("/")[-1]
-    print(f"Model name: {model_name}...")
+    print(f"Model name: {model_name}...\n")
 
     temp_dir = os.path.join("./", model_name)
 
@@ -788,7 +795,7 @@ def download_model(url: str, token: str = None) -> dict:
     if download_file(config_url, config_path, token):
         downloaded_files[config_file] = config_path
     else:
-        raise Exception(f"Failed to download {config_url}.")
+        raise Exception(f"Failed to download {config_url}.\n")
 
     # tokenizer
     tokenizer_file = "tokenizer.json"
@@ -798,7 +805,7 @@ def download_model(url: str, token: str = None) -> dict:
     if download_file(tokenizer_url, tokenizer_path, token):
         downloaded_files[tokenizer_file] = tokenizer_path
     else:
-        raise Exception(f"Failed to download {tokenizer_url}.")
+        raise Exception(f"Failed to download {tokenizer_url}.\n")
 
     safetensors_file = "model.safetensors"
     safetensors_url = urljoin(url + "resolve/main/", safetensors_file)
@@ -806,16 +813,43 @@ def download_model(url: str, token: str = None) -> dict:
 
     if download_file(safetensors_url, safetensors_path, token):
         downloaded_files[safetensors_file] = safetensors_path
-    else:
-        for safetensors_file in ["model-00001-of-00003.safetensors", "model-00002-of-00003.safetensors", "model-00003-of-00003.safetensors"]:
+        return downloaded_files
+
+    # 3 parts
+    safetensors_file = "model-00001-of-00003.safetensors"
+    safetensors_url = urljoin(url + "resolve/main/", safetensors_file)
+    safetensors_path = os.path.join(temp_dir, safetensors_file)
+
+    if download_file(safetensors_url, safetensors_path, token):
+        downloaded_files[safetensors_file] = safetensors_path
+        for safetensors_file in ["model-00002-of-00003.safetensors", "model-00003-of-00003.safetensors"]:
             safetensors_url = urljoin(url + "resolve/main/", tokenizer_file)
             safetensors_path = os.path.join(temp_dir, tokenizer_file)
             if download_file(safetensors_url, safetensors_path, token):
                 downloaded_files[safetensors_file] = safetensors_path
             else:
                 raise Exception(f"Failed to download {safetensors_file}.")
+        return downloaded_files
 
-    return downloaded_files
+    # 10 parts
+    safetensors_file = "model-00001-of-00010.safetensors"
+    safetensors_url = urljoin(url + "resolve/main/", safetensors_file)
+    safetensors_path = os.path.join(temp_dir, safetensors_file)
+
+    if download_file(safetensors_url, safetensors_path, token):
+        downloaded_files[safetensors_file] = safetensors_path
+        for safetensors_file in ["model-00002-of-00010.safetensors", "model-00003-of-00010.safetensors",
+                                 "model-00003-of-00010.safetensors", "model-00004-of-00010.safetensors",
+                                 "model-00005-of-00010.safetensors", "model-00006-of-00010.safetensors",
+                                 "model-00007-of-00010.safetensors", "model-00008-of-00010.safetensors",
+                                 "model-00009-of-00010.safetensors", "model-00010-of-00010.safetensors"]:
+            safetensors_url = urljoin(url + "resolve/main/", tokenizer_file)
+            safetensors_path = os.path.join(temp_dir, tokenizer_file)
+            if download_file(safetensors_url, safetensors_path, token):
+                downloaded_files[safetensors_file] = safetensors_path
+            else:
+                raise Exception(f"Failed to download {safetensors_file}.")
+        return downloaded_files
 
 def sort_tensors(tensors: dict) -> OrderedDict:
     """

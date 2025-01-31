@@ -1,9 +1,7 @@
 #pragma once
 
-#include <atomic>
 #include <condition_variable>
 #include <functional>
-#include <mutex>
 #include <queue>
 #include <stdexcept>
 #include <thread>
@@ -56,16 +54,16 @@ public:
 	 * @param on_start           Callback before each task (may be empty).
 	 * @param on_finish          Callback after each task (may be empty).
 	 */
-	task_pool(std::size_t num_threads, Task main_func, const bool run_immediately = true,
+	explicit task_pool(Task main_func, const std::size_t num_threads = std::thread::hardware_concurrency(), const bool run_immediately = true,
 		Callback on_start = {}, Callback on_finish = {}) :
 		main_func_(std::move(main_func)), on_start_(std::move(on_start)), on_finish_(std::move(on_finish)), stop_(false),
 		started_(false), num_threads_(num_threads), total_queued_(0), total_finished_(0), tasks_in_queue_(0),
 		tasks_in_progress_(0) {
 		if (!main_func_) {
-			throw std::invalid_argument("ThreadPool: mainFunc cannot be empty");
+			throw std::invalid_argument("ThreadPool: main_func cannot be empty");
 		}
 		if (num_threads_ == 0) {
-			throw std::invalid_argument("ThreadPool: numThreads must be > 0");
+			throw std::invalid_argument("ThreadPool: num_threads must be > 0");
 		}
 
 		// If user wants immediate start, spawn threads now
