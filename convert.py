@@ -763,6 +763,16 @@ def process_input(input_path: str) -> (str, str, []):
             for st_f in files_to_process:
                 if os.path.exists(os.path.join(input_path, st_f)):
                     model_files.append(os.path.join(input_path, st_f))
+        elif os.path.exists(os.path.join(input_path, "model-00001-of-00004.safetensors")):
+            files_to_process = [
+                "model-00001-of-00004.safetensors",
+                "model-00002-of-00004.safetensors",
+                "model-00003-of-00004.safetensors",
+                "model-00004-of-00004.safetensors"
+            ]
+            for st_f in files_to_process:
+                if os.path.exists(os.path.join(input_path, st_f)):
+                    model_files.append(os.path.join(input_path, st_f))
         elif os.path.exists(os.path.join(input_path, "model-00001-of-00010.safetensors")):
             files_to_process = [
                 "model-00001-of-00010.safetensors",
@@ -842,6 +852,23 @@ def download_model(url: str, token: str = None) -> dict:
         for safetensors_file in ["model-00002-of-00003.safetensors", "model-00003-of-00003.safetensors"]:
             safetensors_url = urljoin(url + "resolve/main/", safetensors_path)
             safetensors_path = os.path.join(temp_dir, safetensors_path)
+            if download_file(safetensors_url, safetensors_path, token):
+                downloaded_files[safetensors_file] = safetensors_path
+            else:
+                raise Exception(f"Failed to download {safetensors_file}.")
+        return downloaded_files
+
+    # 4 parts
+    safetensors_file = "model-00001-of-00004.safetensors"
+    safetensors_url = urljoin(url + "resolve/main/", safetensors_file)
+    safetensors_path = os.path.join(temp_dir, safetensors_file)
+
+    if download_file(safetensors_url, safetensors_path, token):
+        downloaded_files[safetensors_file] = safetensors_path
+        for safetensors_file in ["model-00002-of-00004.safetensors", "model-00003-of-00004.safetensors",
+                                 "model-00004-of-00004"]:
+            safetensors_url = urljoin(url + "resolve/main/", safetensors_file)
+            safetensors_path = os.path.join(temp_dir, safetensors_file)
             if download_file(safetensors_url, safetensors_path, token):
                 downloaded_files[safetensors_file] = safetensors_path
             else:
