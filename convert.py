@@ -843,8 +843,8 @@ def download_model(url: str, token: str = None) -> dict:
                                  "model-00006-of-00010.safetensors", "model-00007-of-00010.safetensors",
                                  "model-00008-of-00010.safetensors", "model-00009-of-00010.safetensors",
                                  "model-00010-of-00010.safetensors"]:
-            safetensors_url = urljoin(url + "resolve/main/", safetensors_path)
-            safetensors_path = os.path.join(temp_dir, safetensors_path)
+            safetensors_url = urljoin(url + "resolve/main/", safetensors_file)
+            safetensors_path = os.path.join(temp_dir, safetensors_file)
             if download_file(safetensors_url, safetensors_path, token):
                 downloaded_files[safetensors_file] = safetensors_path
             else:
