@@ -379,13 +379,15 @@ namespace types2 {
 
 	template <>
 	struct TypeDescriptor<Type::f32> {
+		TypeDescriptor() = delete;
+
 		using scalar_type = float32_t;
 		using native_type = float32_t;
 		using bundle_type = bundle<native_type>;
 
 		constexpr static auto type = Type::f32;
 		constexpr static std::string_view name = "f32";
-		constexpr static size_t bit_size = sizeof(float32_t) * 8;
+		constexpr static size_t bit_size = sizeof(native_type) * 8;
 		constexpr static bool is_floating_point = true;
 		constexpr static bool is_native_type = true;
 
