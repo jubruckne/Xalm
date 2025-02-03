@@ -7,7 +7,7 @@ UNAME := $(shell uname)
 
 BUILD := build
 SRC_DIR := src
-VENDOR_DIR := vendor
+VENDOR_DIR := 3rdparty
 ASM_DIR := $(BUILD)/asm
 BIN_DIR := .
 
@@ -26,19 +26,17 @@ endif
 SOURCES=$(filter-out src/test.cpp,$(wildcard src/*.c))
 SOURCES+=$(filter-out src/test.cpp,$(wildcard src/*.cc))
 SOURCES+=$(filter-out src/test.cpp,$(wildcard src/*.cpp))
-#SOURCES+=$(filter-out src/test.cpp,$(wildcard src/*.cu))
-SOURCES+=$(wildcard vendor/*.c)
-SOURCES+=$(wildcard vendor/*.cc)
-SOURCES+=$(wildcard vendor/*.cpp)
-#SOURCES+=$(wildcard vendor/*.cu)
+SOURCES+=$(wildcard $(VENDOR_DIR)/*.c)
+SOURCES+=$(wildcard $(VENDOR_DIR)/*.cc)
+SOURCES+=$(wildcard $(VENDOR_DIR)/*.cpp)
 
 # Define test sources separately
 TEST_SOURCES=$(filter-out src/main.cpp,$(wildcard src/*.c))
 TEST_SOURCES+=$(filter-out src/main.cpp,$(wildcard src/*.cc))
 TEST_SOURCES+=$(filter-out src/main.cpp,$(wildcard src/*.cpp))
-TEST_SOURCES+=$(wildcard vendor/*.c)
-TEST_SOURCES+=$(wildcard vendor/*.cc)
-TEST_SOURCES+=$(wildcard vendor/*.cpp)
+TEST_SOURCES+=$(wildcard $(VENDOR_DIR)/*.c)
+TEST_SOURCES+=$(wildcard $(VENDOR_DIR)/*.cc)
+TEST_SOURCES+=$(wildcard $(VENDOR_DIR)/*.cpp)
 
 OBJECTS=$(SOURCES:%=$(BUILD)/%.o)
 TEST_OBJECTS=$(TEST_SOURCES:%=$(BUILD)/%.o)
@@ -47,21 +45,6 @@ TEST_ASM_FILES=$(patsubst %.cpp,$(ASM_DIR)/%.s,$(filter %.cpp,$(TEST_SOURCES)))
 
 BINARY=$(BUILD)/main
 TEST_BINARY=$(BUILD)/test
-
-#LDFLAGS+=-lcudart
-#
-#ifneq (,$(wildcard /usr/local/cuda))
-#  LDFLAGS+=-L/usr/local/cuda/lib64
-#endif
-#
-#CUFLAGS+=-O2 -lineinfo -Ivendor
-#CUFLAGS+=-allow-unsupported-compiler # for recent CUDA versions
-#
-#ifeq ($(CUARCH),)
-#  CUFLAGS+=-gencode arch=compute_80,code=sm_80 -gencode arch=compute_90,code=sm_90 --threads 2
-#else
-#  CUFLAGS+=-arch=$(CUARCH)
-#endif
 
 all: $(BINARY) asm
 

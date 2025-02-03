@@ -743,7 +743,7 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
             nbytes = storage.nbytes()
             raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
 
-            hash_value = xxhash.xxh64(raw_data)
+            hash_value = xxhash.xxh3_64(raw_data)
 
             metadata.tensors[conv_name] = {
                 "type": actual_type.name(),

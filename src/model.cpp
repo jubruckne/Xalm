@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <string>
-#include "fmt/format.h"
 #include "json.hpp"
 #include "types.h"
 #include "xalm.h"
@@ -50,7 +49,7 @@ Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
 	system_usage::scoped su{"Model::from_xalm"};
 	auto config = Config::from_xalm(xalm, context);
 
-	auto load_tensor_data = task_pool<Xalm::tensor_info, std::span<std::byte>>{
+	auto load_tensor_data = //task_pool<Xalm::tensor_info, std::span<std::byte>>{
 		[](const Xalm::tensor_info& ti, std::span<std::byte> buffer) {
 			if (buffer.size() != ti.size) {
 				throw std::runtime_error("YAML buffer size mismatch");
@@ -58,7 +57,7 @@ Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
 			auto stream = std::ifstream(ti.file_name, std::ios::binary);
 			stream.seekg(static_cast<std::streamoff>(ti.offset), std::ios::beg);
 			stream.read(reinterpret_cast<char*>(&buffer.front()), static_cast<std::streamoff>(ti.size));
-		}};
+		};
 
 	auto load_tensor = [&xalm, &load_tensor_data](const std::string& name, const std::vector<int>& expected_shape = {}) -> Tensor {
 		const auto ti = xalm.tensors.at(name);
@@ -91,15 +90,15 @@ Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
 		progress.step(std::format("loading layer {}...", i));
 		blocks.emplace_back(
 			i,
-			load_tensor(fmt::format("l.{}.attn.norm.weight", i),{config.dim}),
-			load_tensor(fmt::format("l.{}.mlp.norm.weight", i),{config.dim}),
-			load_tensor(fmt::format("l.{}.attn.q.weight", i),{config.n_heads * config.head_dim, config.dim}),
-			load_tensor(fmt::format("l.{}.attn.k.weight", i),{config.n_kv_heads * config.head_dim, config.dim}),
-			load_tensor(fmt::format("l.{}.attn.v.weight", i),{config.n_kv_heads * config.head_dim, config.dim}),
-			load_tensor(fmt::format("l.{}.attn.down.weight", i),{config.dim, config.n_heads * config.head_dim}),
-			load_tensor(fmt::format("l.{}.mlp.gate.weight", i),{config.hidden_dim, config.dim}),
-			load_tensor(fmt::format("l.{}.mlp.down.weight", i),{config.dim, config.hidden_dim}),
-			load_tensor(fmt::format("l.{}.mlp.up.weight", i),{config.hidden_dim, config.dim}),
+			load_tensor(std::format("l.{}.attn.norm.weight", i),{config.dim}),
+			load_tensor(std::format("l.{}.mlp.norm.weight", i),{config.dim}),
+			load_tensor(std::format("l.{}.attn.q.weight", i),{config.n_heads * config.head_dim, config.dim}),
+			load_tensor(std::format("l.{}.attn.k.weight", i),{config.n_kv_heads * config.head_dim, config.dim}),
+			load_tensor(std::format("l.{}.attn.v.weight", i),{config.n_kv_heads * config.head_dim, config.dim}),
+			load_tensor(std::format("l.{}.attn.down.weight", i),{config.dim, config.n_heads * config.head_dim}),
+			load_tensor(std::format("l.{}.mlp.gate.weight", i),{config.hidden_dim, config.dim}),
+			load_tensor(std::format("l.{}.mlp.down.weight", i),{config.dim, config.hidden_dim}),
+			load_tensor(std::format("l.{}.mlp.up.weight", i),{config.hidden_dim, config.dim}),
 			new float16_t[config.max_seq_len * config.n_kv_heads * config.head_dim],
 			new float16_t[config.max_seq_len * config.n_kv_heads * config.head_dim]
 		);
@@ -113,7 +112,7 @@ Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
 		? load_tensor("embed.weight",{config.vocab_size, config.dim})
 		: load_tensor("output.weight",{config.vocab_size, config.dim});
 
-	load_tensor_data.wait();
+	//load_tensor_data.wait();
 	return Model{config, token_embedding_table, blocks, rms_final_weight, wcls};
 }
 

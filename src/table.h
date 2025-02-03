@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <iomanip>
 #include <optional>
-#include <fmt/format.h>
 
 // ---------------------------------------------------------
 // alignment enum (snake_case)
@@ -166,8 +165,8 @@ std::string format_value(const T &value, const std::string &fmt) {
         if constexpr (std::is_floating_point_v<T>) {
             return std::vformat("{.2f}", std::make_format_args(value));
         } else if constexpr (std::is_integral_v<T>) {
-            auto s = fmt::group_digits(value);
-            return fmt::format("{}", s);
+            auto s = std::format("{}", value); //TODO fixme
+            return std::format("{}", s);
         } else {
             return std::format("{}", value);
         }

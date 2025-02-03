@@ -5,10 +5,9 @@
 #include <iostream>
 #include <sstream>
 
-#include "fmt/format.h"
 #include "profiler.h"
 
-#include <cxxopts.hpp>
+#include "cxxopts.hpp"
 #include "model.h"
 #include "sampler.h"
 #include "tensor.h"
@@ -16,7 +15,6 @@
 #include "tokenizer.h"
 
 #include "console.h"
-
 
 void error_usage() {
 	fprintf(stderr, "Usage:   main <checkpoint> [options]\n");
@@ -92,12 +90,10 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 
 		std::cout << tokenizer.encoding_to_debug_string(encoding) << std::endl;
 		uint64_t encoding_ms = encode_end_ms - encode_start_ms;
-		std::cout
-				<< fmt::format(
-						   "Encoding stats: ({} tokens, throughput: {:.5}tok/s, latency: {:.5}s/tok, total: {:.5}s)\n",
+
+		console::print("Encoding stats: ({} tokens, throughput: {:.5}tok/s, latency: {:.5}s/tok, total: {:.5}s)\n",
 						   encoding.size(), encoding.size() / (encoding_ms / 1000.0),
-						   (encoding_ms / 1000.0) / encoding.size(), encoding_ms / 1000.0)
-				<< std::endl;
+						   (encoding_ms / 1000.0) / encoding.size(), encoding_ms / 1000.0);
 	}
 
 	uint64_t start_ms = get_timestamp_ms();
@@ -129,7 +125,7 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 	std::cout << "\n" << std::endl;
 	uint64_t end_ms = get_timestamp_ms();
 	double elapsed_s = (end_ms - start_ms) / 1000.0;
-	std::cout << fmt::format("Generation stats:\n"
+	console::print("Generation stats:\n"
 							 "  {} tokens\n"
 							 "  throughput: {:.5}tok/s\n"
 							 "  latency: {:.5}s/tok\n"
@@ -138,8 +134,7 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 							 "  total: {:.5}s\n",
 							 encoding.size(), encoding.size() / elapsed_s, elapsed_s / encoding.size(),
 							 (end_hydrate_ms - start_ms) / 1000.0, (static_cast<double>(read_bytes) / 1e9) / elapsed_s,
-							 elapsed_s)
-			  << std::endl;
+							 elapsed_s);
 }
 
 void run_test(const std::string &checkpoint_path) {
@@ -230,12 +225,10 @@ void run_perplexity(const std::string &checkpoint_path, const std::string &devic
 
 		std::cout << tokenizer.encoding_to_debug_string(encoding) << std::endl;
 		uint64_t encoding_ms = encode_end_ms - encode_start_ms;
-		std::cout
-				<< fmt::format(
-						   "Encoding stats: ({} tokens, throughput: {:.5}tok/s, latency: {:.5}s/tok, total: {:.5}s)\n",
+
+		console::print("Encoding stats: ({} tokens, throughput: {:.5}tok/s, latency: {:.5}s/tok, total: {:.5}s)\n",
 						   encoding.size(), encoding.size() / (encoding_ms / 1000.0),
-						   (encoding_ms / 1000.0) / encoding.size(), encoding_ms / 1000.0)
-				<< std::endl;
+						   (encoding_ms / 1000.0) / encoding.size(), encoding_ms / 1000.0);
 	}
 
 	double sum_logprob = 0.0;
@@ -261,7 +254,7 @@ void run_perplexity(const std::string &checkpoint_path, const std::string &devic
 	double elapsed_s = (end_ms - start_ms) / 1000.0;
 	double perplexity = std::exp(-sum_logprob / N);
 	double perplexity_error = perplexity * std::sqrt((ss_logprob - sum_logprob * sum_logprob / N) / N / N);
-	std::cout << fmt::format("Stats:\n"
+	console::print("Stats:\n"
 							 "  {} tokens\n"
 							 "  perplexity: {:.5} ± {:.5}\n"
 							 "  throughput: {:.5}tok/s\n"
@@ -269,8 +262,7 @@ void run_perplexity(const std::string &checkpoint_path, const std::string &devic
 							 "  bandwidth: {:.5}GB/s\n"
 							 "  total: {:.5}s\n",
 							 N, perplexity, perplexity_error, N / elapsed_s, elapsed_s / N,
-							 (static_cast<double>(read_bytes) / 1e9) / elapsed_s, elapsed_s)
-			  << std::endl;
+							 (static_cast<double>(read_bytes) / 1e9) / elapsed_s, elapsed_s);
 }
 
 void run_passkey(const std::string &checkpoint_path, const std::string &device, const int context, const int n_junk,
@@ -321,24 +313,20 @@ void run_passkey(const std::string &checkpoint_path, const std::string &device, 
 		uint64_t encode_end_ms = get_timestamp_ms();
 
 		uint64_t encoding_ms = encode_end_ms - encode_start_ms;
-		std::cout
-				<< fmt::format(
-						   "Encoding stats: ({} tokens, throughput: {:.5}tok/s, latency: {:.5}s/tok, total: {:.5}s)\n",
+		console::print("Encoding stats: ({} tokens, throughput: {:.5}tok/s, latency: {:.5}s/tok, total: {:.5}s)\n",
 						   encoding.size(), encoding.size() / (encoding_ms / 1000.0),
-						   (encoding_ms / 1000.0) / encoding.size(), encoding_ms / 1000.0)
-				<< std::endl;
+						   (encoding_ms / 1000.0) / encoding.size(), encoding_ms / 1000.0);
 	}
 
 	// Allow max 16 steps to generate passkey
 	constexpr size_t MAX_GENERATION_STEPS = 16;
 
-	std::cout << fmt::format("Passkey test:\n"
+	console::print("Passkey test:\n"
 							 "  prompt: {} tokens\n"
 							 "  passkey: {}\n"
 							 "  passkey token index: ~{}\n",
 							 encoding.size(), passkey,
-							 static_cast<int>(static_cast<float>(pos) / n_junk * encoding.size()))
-			  << std::endl;
+							 static_cast<int>(static_cast<float>(pos) / n_junk * encoding.size()));
 
 	size_t N = encoding.size();
 	for (size_t pos = 0; pos < N; pos++) {

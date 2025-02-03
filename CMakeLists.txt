@@ -11,7 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Build directories
 set(SRC_DIR "src")
-set(VENDOR_DIR "vendor")
+set(VENDOR_DIR "3rdparty")
 
 # Compiler flags
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
@@ -58,7 +58,7 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS
 # Define main executable
 add_executable(main ${SOURCES})
 target_include_directories(main PRIVATE ${OpenMP_INCLUDE_DIRS})
-target_include_directories(main PRIVATE ${PROJECT_SOURCE_DIR}/vendor)
+target_include_directories(main PRIVATE ${PROJECT_SOURCE_DIR}/3rdparty)
 
 # Generate compile_commands.json
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

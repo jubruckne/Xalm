@@ -2,6 +2,7 @@
 #include "console.h"
 #include <cassert>
 #include <cstdint>
+#include "types2.h"
 
 #if defined(__AVX2__) && defined(__F16C__)
 #include <immintrin.h> // Intel/AVX2
@@ -147,32 +148,6 @@ static uint16_t f32_to_bf16(const float32_t s) {
 
 	return (i + (0x7fff + ((i >> 16) & 1))) >> 16;
 }
-/*
-struct data_type;
-
-template<auto t>
-struct traits;
-
-struct data_type {
-	constexpr data_type(const uint8_t id) : id(id) {} // NOLINT(*-explicit-constructor)
-	constexpr uint8_t id = 0;
-
-
-
-};
-
-constexpr data_type unknown = 0;
-constexpr data_type f32 = 1;
-constexpr data_type f16 = 2;
-constexpr data_type bf16 = 3;
-constexpr data_type f8_e2m5 = 4;
-constexpr data_type f8_e3m4 = 5;
-constexpr data_type f8_e4m3 = 6;
-constexpr data_type f8_e5m2 = 7;
-
-template<>
-struct traits<f32> {};*/
-
 
 struct Type {
 	static const Type Unknown;

@@ -128,7 +128,6 @@ static void matmul(float *__restrict__ xout, const float *__restrict__ x, const 
 	}
 }
 
-
 [[maybe_unused]] static void matmul(float *__restrict__ xout, const float *__restrict__ x,
 									const f8e4m3_t *__restrict__ w, const int n, const int d) noexcept {
 	// W (d,n) @ x (n,) -> xout (d,)

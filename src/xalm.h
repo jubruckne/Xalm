@@ -1,10 +1,12 @@
 #pragma once
 
+#include <fstream>
+#include <unistd.h>
+#include "XalmFile.h"
 #include "console.h"
 #include "table.h"
 
-#include <fstream>
-#include <unistd.h>
+#include <map>
 
 struct Xalm {
 	struct tensor_info {
