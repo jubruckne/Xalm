@@ -81,22 +81,22 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 	// On GPU, this ensures all tensors are loaded into device memory and
 	// kernels are compiled + instantiated.
 	model.forward(state, 0, 0);
+	auto su = system_usage{};
 
 	std::vector<int> encoding;
 	{
-		uint64_t encode_start_ms = get_timestamp_ms();
+		su.reset();
 		encoding = tokenizer.encode(prompt, true);
-		uint64_t encode_end_ms = get_timestamp_ms();
 
 		std::cout << tokenizer.encoding_to_debug_string(encoding) << std::endl;
-		uint64_t encoding_ms = encode_end_ms - encode_start_ms;
+		uint64_t encoding_ms = su.measure().total_time_ms;
 
 		console::print("Encoding stats: ({} tokens, throughput: {:.5}tok/s, latency: {:.5}s/tok, total: {:.5}s)\n",
 						   encoding.size(), encoding.size() / (encoding_ms / 1000.0),
 						   (encoding_ms / 1000.0) / encoding.size(), encoding_ms / 1000.0);
 	}
 
-	uint64_t start_ms = get_timestamp_ms();
+	su.reset();
 	size_t read_bytes = 0;
 	// Hydrate KV cache by forwarding model on all prompt tokens and discarding output.
 	// This also generates output logits for the last token.
@@ -107,7 +107,7 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 		model.forward(state, token_id, pos, inferMode);
 		read_bytes += model.active_bytes(pos);
 	}
-	uint64_t end_hydrate_ms = get_timestamp_ms();
+	uint64_t hydrate_ms = su.measure().total_time_ms;
 	// For N steps:
 	// - Sample + decode output logits
 	// - Forward the model
@@ -123,8 +123,7 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 		read_bytes += model.active_bytes(encoding.size() - 1);
 	}
 	std::cout << "\n" << std::endl;
-	uint64_t end_ms = get_timestamp_ms();
-	double elapsed_s = (end_ms - start_ms) / 1000.0;
+	double elapsed_s = su.measure().total_time_ms / 1000.0;
 	console::print("Generation stats:\n"
 							 "  {} tokens\n"
 							 "  throughput: {:.5}tok/s\n"
@@ -133,7 +132,7 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 							 "  bandwidth: {:.5}GB/s\n"
 							 "  total: {:.5}s\n",
 							 encoding.size(), encoding.size() / elapsed_s, elapsed_s / encoding.size(),
-							 (end_hydrate_ms - start_ms) / 1000.0, (static_cast<double>(read_bytes) / 1e9) / elapsed_s,
+							 hydrate_ms / 1000.0, (static_cast<double>(read_bytes) / 1e9) / elapsed_s,
 							 elapsed_s);
 }
 
@@ -217,14 +216,15 @@ void run_perplexity(const std::string &checkpoint_path, const std::string &devic
 	// kernels are compiled + instantiated.
 	model.forward(state, 0, 0);
 
+	auto su = system_usage{};
+
 	std::vector<int> encoding;
 	{
-		uint64_t encode_start_ms = get_timestamp_ms();
+		su.reset();
 		encoding = tokenizer.encode(prompt, true);
-		uint64_t encode_end_ms = get_timestamp_ms();
 
 		std::cout << tokenizer.encoding_to_debug_string(encoding) << std::endl;
-		uint64_t encoding_ms = encode_end_ms - encode_start_ms;
+		uint64_t encoding_ms = su.measure().total_time_ms;
 
 		console::print("Encoding stats: ({} tokens, throughput: {:.5}tok/s, latency: {:.5}s/tok, total: {:.5}s)\n",
 						   encoding.size(), encoding.size() / (encoding_ms / 1000.0),
@@ -235,7 +235,8 @@ void run_perplexity(const std::string &checkpoint_path, const std::string &devic
 	double ss_logprob = 0.0;
 	// Generates output logits for all tokens in the prompt and sum log probs to
 	// compute perplexity.
-	uint64_t start_ms = get_timestamp_ms();
+
+	su.reset();
 	size_t read_bytes = 0;
 	size_t N = encoding.size() - 1;
 	for (size_t pos = 0; pos + 1 < encoding.size(); pos++) {
@@ -250,8 +251,7 @@ void run_perplexity(const std::string &checkpoint_path, const std::string &devic
 		ss_logprob += logprob * logprob;
 	}
 	std::cout << std::endl;
-	uint64_t end_ms = get_timestamp_ms();
-	double elapsed_s = (end_ms - start_ms) / 1000.0;
+	double elapsed_s = su.measure().total_time_ms / 1000.0;
 	double perplexity = std::exp(-sum_logprob / N);
 	double perplexity_error = perplexity * std::sqrt((ss_logprob - sum_logprob * sum_logprob / N) / N / N);
 	console::print("Stats:\n"
@@ -308,11 +308,10 @@ void run_passkey(const std::string &checkpoint_path, const std::string &device, 
 
 	std::vector<int> encoding;
 	{
-		uint64_t encode_start_ms = get_timestamp_ms();
+		auto su = system_usage{};
 		encoding = tokenizer.encode(prompt, true);
-		uint64_t encode_end_ms = get_timestamp_ms();
 
-		uint64_t encoding_ms = encode_end_ms - encode_start_ms;
+		uint64_t encoding_ms = su.measure().total_time_ms;
 		console::print("Encoding stats: ({} tokens, throughput: {:.5}tok/s, latency: {:.5}s/tok, total: {:.5}s)\n",
 						   encoding.size(), encoding.size() / (encoding_ms / 1000.0),
 						   (encoding_ms / 1000.0) / encoding.size(), encoding_ms / 1000.0);

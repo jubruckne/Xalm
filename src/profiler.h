@@ -90,6 +90,7 @@ public:
 	struct info {
 		int64_t user_time_ms; // User CPU time in milliseconds
 		int64_t system_time_ms; // System CPU time in milliseconds
+		int64_t total_time_ms; // User + System time in milliseconds
 		int64_t wall_time_ms; // Real elapsed time in milliseconds (wall clock)
 		int64_t page_faults; // Major page faults (disk I/O required)
 		int64_t page_reclaims; // Minor page faults (no disk I/O)
@@ -123,6 +124,8 @@ public:
 		return {
 			timeval_to_ms(end_usage.ru_utime) - timeval_to_ms(start_usage.ru_utime),
 			timeval_to_ms(end_usage.ru_stime) - timeval_to_ms(start_usage.ru_stime),
+			timeval_to_ms(end_usage.ru_utime) - timeval_to_ms(start_usage.ru_utime)
+						+ timeval_to_ms(end_usage.ru_stime) - timeval_to_ms(start_usage.ru_stime),
 			std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count(),
 			end_usage.ru_majflt - start_usage.ru_majflt,
 			end_usage.ru_minflt - start_usage.ru_minflt,

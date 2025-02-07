@@ -18,12 +18,11 @@ from enum import Enum
 from urllib.parse import urljoin
 
 import xxhash
-from torch.fx.experimental.unification.multipledispatch.utils import typename
+from absl.logging import flush
 
 from quants import quantize as gguf_quantize, dequantize as gguf_dequantize, GGMLQuantizationType
 import requests
 import safetensors
-from safetensors.torch import save_file
 import torch
 from tqdm import tqdm
 
@@ -36,64 +35,80 @@ def align_offset(offset, alignment=32):
     """Round up offset to the nearest multiple of alignment."""
     return (offset + (alignment - 1)) // alignment * alignment
 
-def save_binary(filename: str, tensors: OrderedDict, metadata: dict):
-    metadata.tensors = sort_tensors(metadata.tensors)
+def save_xalm_binary(filename: str, tensors: dict, metadata: dict):
+    print(f"sorting {len(tensors)} tensors...")
+
+    tensor_names = sort_tensor_names(tensors)
 
     current_offset = 0
 
-    for tensor_name, meta in metadata.tensors.items():
+    print("pre-processing tensors...", flush=True)
+
+    for tensor_name in tensor_names:
+        print(f"  {tensor_name}...", end="")
+        t = tensors[tensor_name]
         current_offset = align_offset(current_offset)
-        t: torch.Tensor = tensors[tensor_name]
         storage = t.untyped_storage()
         data_ptr = storage.data_ptr()
         nbytes = storage.nbytes()
         raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
         hash_value = xxhash.xxh3_64(raw_data)
-        meta["hash"] = hash_value.intdigest()
-        meta["offset"] = current_offset
-        meta["size"] = nbytes
+        metadata["tensors"][tensor_name]["hash"] = hash_value.hexdigest()
+        print(f" hash={metadata["tensors"][tensor_name]["hash"]}", end="")
+        metadata["tensors"][tensor_name]["offset"] = current_offset
+        print(f" offset={metadata["tensors"][tensor_name]["offset"]}", end="")
+        metadata["tensors"][tensor_name]["size"] = nbytes
+        print(f" size={metadata["tensors"][tensor_name]["size"]}", flush=True)
         current_offset += nbytes
+
+    print(f"\nsaving {filename}...", end="", flush=True)
+    torch.save(tensors, filename)
 
     with open(filename, "wb") as f:
         # Convert metadata to JSON
         metadata_json = json.dumps(metadata).encode("utf-8")
         metadata_size = len(metadata_json)
+        print(f" meta size={metadata_size},", end="")
 
         f.write(struct.pack("Q", metadata_size))
         f.write(metadata_json)
 
         # Track the current file offset
-        metadata_size = f.tell() + 128
-
-        metadata_size = align_offset(metadata_size)
-        padding = metadata_size - metadata_size
+        padding = align_offset(f.tell() + 128, 4096) - f.tell()
+        print(f" meta padding={padding},", end="")
         if padding > 0:
             f.write(b"\x00" * padding)
 
-        metadata_size = f.tell() - 1
+        metadata_size = f.tell()
         f.seek(0)
         f.write(struct.pack("Q", metadata_size))
         f.seek(metadata_size)
+        print(f" start of data blob={f.tell()}", flush=True)
+        print(f"\nwriting tensor data...")
+
+        current_offset = f.tell()
 
         # Write tensor data sequentially with alignment
-        for tensor_name, tensor in tensors.items():
+        for tensor_name in tensor_names:
+            current_offset = f.tell()
+            print(f"  {tensor_name}... offset: {current_offset}", flush=True)
+
             # Ensure alignment
             aligned_offset = align_offset(current_offset)
             padding = aligned_offset - current_offset
             if padding > 0:
                 f.write(b"\x00" * padding)
 
-            # Update the offset after padding
-            current_offset = aligned_offset
-
-            storage = tensor.untyped_storage()
+            storage = tensors[tensor_name].untyped_storage()
             data_ptr = storage.data_ptr()
             nbytes = storage.nbytes()
             raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
+            f.write(raw_data)
+            del tensors[tensor_name]
+            del raw_data
+            gc.collect()
 
-            hash_value = xxhash.xxh3_64(raw_data)
-            metadata[tensor_name]["hash"] = hash_value.intdigest()
-
+    print(f"done!")
 
 class XTensor:
     def __init__(self, t: torch.Tensor, name: str):
@@ -111,6 +126,7 @@ class XType(Enum):
     qi8 = 7
     qi4 = 8
     qi3 = 9
+    u8 = 10
 
     # gguf types
     q4_0 = 1007
@@ -144,6 +160,8 @@ class XType(Enum):
             return XType.f8_e5m2
         elif dtype == "f4_e2m1":
             return XType.f4_e2m1
+        elif dtype == "u8":
+            return XType.u8
         elif dtype == "qi3":
             return XType.qi3
         elif dtype == "qi4":
@@ -274,12 +292,12 @@ class Metadata:
             assert config["hidden_act"] in ["gelu", "silu"]
             self.act_type = config["hidden_act"]
 
-            self.tensors = OrderedDict()
+            self.tensors = {}
         else:
             raise Exception(f"unexpected Architecture: {arch}!")
 
-    def to_dict(self):
-        result = {"arch": self.arch}
+    def to_dict(self) -> dict:
+        result = {"xalm": {"version": 1}, "arch": self.arch}
         if self.arch == "MistralForCausalLM" or self.arch == "LlamaForCausalLM":
             result["dim"] = str(self.dim)
             result["hidden_dim"] = str(self.hidden_dim)
@@ -297,15 +315,12 @@ class Metadata:
             result["norm_type"] = str(self.norm_type)
             result["act_type"] = str(self.act_type)
             result["tie_word_embeddings"] = str(self.tie_word_embeddings)
+        else:
+            raise Exception(f"unexpected Architecture: {self.arch}!")
 
+        result["tensors"] = self.tensors
 
-        result["tensors"] = str(self.tensors)
-
-        #if len(str(result)) % 32 != 0:
-        #    result["padding"] = ""
-        #    while len(str(result)) % 32 != 0:
-        # #       result["padding"] += chr(64 + (32 - (len(str(result)) % 32)))
-        #return result
+        return result
 
 # this is a horrible gpt-2 unicode byte encoder hack from https://github.com/openai/gpt-2/blob/master/src/encoder.py#L9
 # this has poisoned all HF tokenizer configs that use ByteLevel decoder/preprocessor
@@ -746,7 +761,7 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
 
         progress += 1
         actual_type = target_type
-        if conv_name == "embed.weight" or conv_name == "output.weight":
+        if conv_name == "embed.weight" or conv_name == "output.weight": # or "attn.k" in conv_name or "attn.q" in conv_name:
             if t.dtype == torch.bfloat16:
                 actual_type = boost_type(XType.bf16, target_type)
             elif t.dtype == torch.float16:
@@ -802,10 +817,10 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
             convt: torch.tensor = XType.convert_to(t, actual_type)
             tensors[conv_name] = convt
 
-            metadata.tensors.append({
+            metadata.tensors[conv_name] = {
                 "type": actual_type.name(),
                 "shape": convt.shape,
-            })
+            }
 
     tensors = {}
 
@@ -1041,7 +1056,7 @@ def download_model(url: str, token: str = None) -> dict:
                 raise Exception(f"Failed to download {safetensors_file}.")
         return downloaded_files
 
-def sort_tensors(tensors: dict) -> OrderedDict:
+def sort_tensor_names(tensors: dict) -> list:
     """
     Sorts the tensors according to the specified order and returns an OrderedDict.
     """
@@ -1092,7 +1107,7 @@ def sort_tensors(tensors: dict) -> OrderedDict:
     if "tokenizer.tokens" in tensors:
         ordered_keys.append("tokenizer.tokens")
 
-    return OrderedDict((key, tensors[key]) for key in ordered_keys)
+    return ordered_keys
 
 
 if __name__ == "__main__":
@@ -1131,15 +1146,21 @@ if __name__ == "__main__":
         # add tokenizer tensors at the end (to maximize the chance of model tensor alignment)
         # note: we concatenate all bytes of all tokens into a single tensor
         tensors["tokenizer.tokens"] = torch.cat([torch.tensor([x for x in b] + [0], dtype=torch.uint8) for b in tokens])
+        metadata.tensors["tokenizer.tokens"] = {
+            "type": XType.u8.name(),
+            "shape": tensors["tokenizer.tokens"].shape,
+        }
 
         if not args.analyze:
-            print(f"Saving {len(tensors)} tensors...")
+            #print(f"Saving {len(tensors)} tensors...")
             for k, v in tensors.items():
                 assert v.layout == torch.strided and v.is_contiguous()
 
             gc.collect()
-            save_file(sort_tensors(tensors), args.output, metadata.to_dict())
-            print(sort_tensors(tensors).keys())
+            #save_file(sort_tensors(tensors), args.output, metadata.to_dict())
+            #print(sort_tensors(tensors).keys())
+
+            save_xalm_binary(args.output, tensors, metadata.to_dict())
 
             print(f"saved to {args.output}")
 
