@@ -1,4 +1,4 @@
-# Converts a model consisting of a huggingface config.json, tokenizer.json, and .safetensors weights into a .yalm file,
+# Converts a model consisting of a huggingface config.json, tokenizer.json, and .safetensors weights into a .xalm file,
 # which:
 # - Normalizes the config to a common format in the header
 # - Combines any safetensors shards
@@ -11,6 +11,7 @@ import gc
 import os
 import json
 import re
+import struct
 import sys
 from collections import OrderedDict
 from enum import Enum
@@ -30,6 +31,69 @@ SUPPORTED_ARCHITECTURES = [
     "MistralForCausalLM",
     "LlamaForCausalLM"
 ]
+
+def align_offset(offset, alignment=32):
+    """Round up offset to the nearest multiple of alignment."""
+    return (offset + (alignment - 1)) // alignment * alignment
+
+def save_binary(filename: str, tensors: OrderedDict, metadata: dict):
+    metadata.tensors = sort_tensors(metadata.tensors)
+
+    current_offset = 0
+
+    for tensor_name, meta in metadata.tensors.items():
+        current_offset = align_offset(current_offset)
+        t: torch.Tensor = tensors[tensor_name]
+        storage = t.untyped_storage()
+        data_ptr = storage.data_ptr()
+        nbytes = storage.nbytes()
+        raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
+        hash_value = xxhash.xxh3_64(raw_data)
+        meta["hash"] = hash_value.intdigest()
+        meta["offset"] = current_offset
+        meta["size"] = nbytes
+        current_offset += nbytes
+
+    with open(filename, "wb") as f:
+        # Convert metadata to JSON
+        metadata_json = json.dumps(metadata).encode("utf-8")
+        metadata_size = len(metadata_json)
+
+        f.write(struct.pack("Q", metadata_size))
+        f.write(metadata_json)
+
+        # Track the current file offset
+        metadata_size = f.tell() + 128
+
+        metadata_size = align_offset(metadata_size)
+        padding = metadata_size - metadata_size
+        if padding > 0:
+            f.write(b"\x00" * padding)
+
+        metadata_size = f.tell() - 1
+        f.seek(0)
+        f.write(struct.pack("Q", metadata_size))
+        f.seek(metadata_size)
+
+        # Write tensor data sequentially with alignment
+        for tensor_name, tensor in tensors.items():
+            # Ensure alignment
+            aligned_offset = align_offset(current_offset)
+            padding = aligned_offset - current_offset
+            if padding > 0:
+                f.write(b"\x00" * padding)
+
+            # Update the offset after padding
+            current_offset = aligned_offset
+
+            storage = tensor.untyped_storage()
+            data_ptr = storage.data_ptr()
+            nbytes = storage.nbytes()
+            raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
+
+            hash_value = xxhash.xxh3_64(raw_data)
+            metadata[tensor_name]["hash"] = hash_value.intdigest()
+
 
 class XTensor:
     def __init__(self, t: torch.Tensor, name: str):
@@ -210,7 +274,7 @@ class Metadata:
             assert config["hidden_act"] in ["gelu", "silu"]
             self.act_type = config["hidden_act"]
 
-            self.tensors = {}
+            self.tensors = OrderedDict()
         else:
             raise Exception(f"unexpected Architecture: {arch}!")
 
@@ -237,11 +301,11 @@ class Metadata:
 
         result["tensors"] = str(self.tensors)
 
-        if len(str(result)) % 32 != 0:
-            result["padding"] = ""
-            while len(str(result)) % 32 != 0:
-                result["padding"] += chr(64 + (32 - (len(str(result)) % 32)))
-        return result
+        #if len(str(result)) % 32 != 0:
+        #    result["padding"] = ""
+        #    while len(str(result)) % 32 != 0:
+        # #       result["padding"] += chr(64 + (32 - (len(str(result)) % 32)))
+        #return result
 
 # this is a horrible gpt-2 unicode byte encoder hack from https://github.com/openai/gpt-2/blob/master/src/encoder.py#L9
 # this has poisoned all HF tokenizer configs that use ByteLevel decoder/preprocessor
@@ -738,20 +802,10 @@ def load_weights(model_files, target_type: XType, metadata, tie_word_embeddings)
             convt: torch.tensor = XType.convert_to(t, actual_type)
             tensors[conv_name] = convt
 
-            storage = convt.untyped_storage()
-            data_ptr = storage.data_ptr()
-            nbytes = storage.nbytes()
-            raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
-
-            hash_value = xxhash.xxh3_64(raw_data)
-
-            metadata.tensors[conv_name] = {
+            metadata.tensors.append({
                 "type": actual_type.name(),
-                "hash": hash_value.intdigest(),
-            }
-
-            del t, storage, raw_data
-            gc.collect()
+                "shape": convt.shape,
+            })
 
     tensors = {}
 

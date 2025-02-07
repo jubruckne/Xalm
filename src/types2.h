@@ -1,48 +1,185 @@
 #pragma once
 #include <arm_neon.h>
 #include <array>
-#include <concepts>
 #include <cstdint>
 #include <functional>
 
-template<typename T>
-concept BundleType = std::same_as<T, float32_t> || std::same_as<T, float16_t> || std::same_as<T, int8_t> || std::same_as<T, uint8_t>;
+namespace detail {
+	template<typename T>
+	concept SimdType =
+	    std::is_same_v<T, float> ||
+	    std::is_same_v<T, float16_t> ||
+	    std::is_same_v<T, bfloat16_t> ||
+	    std::is_same_v<T, int8_t> ||
+	    std::is_same_v<T, int16_t>;
 
-template<BundleType T>
-class bundle;
+    template<SimdType T, size_t Size>
+    struct simd_register_info;
 
-template<>
-class bundle<float32_t> {
-    static constexpr size_t SIZE = 16;
-    static constexpr size_t ALIGNMENT = 16;
+    template<>
+    struct simd_register_info<float32_t, 4> {
+        using scalar_type = float32_t;
+        using reg_type = float32x4_t;
+        static constexpr size_t regs = 1;
+    	static constexpr size_t size = 4;
+    	static constexpr std::string_view name = "float32x4_t";
 
-public:
-    using value_type = float32_t;
-    using bundle_type = bundle;
-	using vector_type = float32x4x4_t;
+    	[[nodiscard]] static reg_type dup(const scalar_type v) {
+    		return vdupq_n_f32(v);
+    	}
 
-	vector_type data{};
+    	[[nodiscard]] static reg_type add(const reg_type lhs, const reg_type rhs) {
+    		return vaddq_f32(lhs, rhs);
+    	}
 
-    bundle() noexcept : bundle(0) {}
+    	[[nodiscard]] static std::array<scalar_type, size> store(const reg_type r) {
+    		std::array<scalar_type, size> result{};
+    		vst1q_f32(result.data(), r);
+    		return result;
+    	}
+    };
 
-	explicit bundle(const vector_type val) noexcept : data(val) {}
+	template<>
+	struct simd_register_info<float32_t, 8> {
+		using scalar_type = float32_t;
+		using reg_type = float32x4x2_t;
+		static constexpr size_t regs = 2;
+		static constexpr size_t size = 8;
+		static constexpr std::string_view name = "float32x4x2_t";
 
-    explicit bundle(const value_type val) noexcept {
-		float32x4_t v = vdupq_n_f32(val);
-		data.val[0] = v;
-		data.val[1] = v;
-		data.val[2] = v;
-		data.val[3] = v;
+		[[nodiscard]] static reg_type dup(const scalar_type v) {
+			const float32x4_t r = vdupq_n_f32(v);
+			return {r, r};
+		}
+
+		[[nodiscard]] static reg_type add(const reg_type lhs, const reg_type rhs) {
+			return {
+				vaddq_f32(lhs.val[0], rhs.val[0]),
+				vaddq_f32(lhs.val[1], rhs.val[1])
+			};
+		}
+
+		[[nodiscard]] static std::array<scalar_type, size> store(const reg_type r) {
+			std::array<scalar_type, size> result{};
+    		vst1q_f32_x2(result.data(), r);
+			return result;
+		}
+	};
+
+	template<>
+	struct simd_register_info<float32_t, 16> {
+		using scalar_type = float32_t;
+		using reg_type = float32x4x4_t;
+		static constexpr size_t regs = 4;
+		static constexpr size_t size = 16;
+		static constexpr std::string_view name = "float32x4x4_t";
+
+		[[nodiscard]] static reg_type dup(const scalar_type v) {
+			const float32x4_t r = vdupq_n_f32(v);
+			return {r, r, r, r};
+		}
+
+		[[nodiscard]] static reg_type add(const reg_type lhs, const reg_type rhs) {
+			return {
+				vaddq_f32(lhs.val[0], rhs.val[0]),
+				vaddq_f32(lhs.val[1], rhs.val[1]),
+				vaddq_f32(lhs.val[2], rhs.val[2]),
+				vaddq_f32(lhs.val[3], rhs.val[3])
+			};
+		}
+
+		[[nodiscard]] static std::array<scalar_type, size> store(const reg_type r) {
+			std::array<scalar_type, size> result{};
+			vst1q_f32_x4(result.data(), r);
+			return result;
+		}
+	};
+
+	template<size_t Size>
+    concept ValidBundleSize =
+        Size == 16 || Size == 32 || Size == 64 || Size == 128 || Size == 256;
+
+	template<SimdType T>
+	constexpr size_t bundle_alignment = 16;
+
+	template<SimdType T, size_t Size>
+	constexpr bool verify_bundle_alignment() {
+		using traits = simd_register_info<T, Size>;
+		constexpr size_t required_alignment = bundle_alignment<T>;
+		constexpr size_t natural_alignment = alignof(typename traits::reg_array_type);
+		return natural_alignment >= required_alignment;
 	}
+} // namespace detail
+
+
+// A simple consteval function to concatenate string literals.
+template <std::size_t N, std::size_t... Ns>
+consteval auto concat(const char (&first)[N], const char (&... rest)[Ns]) {
+	// Each literal includes a null terminator; ignore those except for one final one.
+	constexpr std::size_t totalSize = ( (N - 1) + ... + (Ns - 1) ) + 1;
+	std::array<char, totalSize> result{}; // will hold all characters plus a final '\0'
+
+	std::size_t pos = 0;
+	// A lambda that copies one string (excluding its null terminator).
+	auto copy = [&pos, &result](auto str, std::size_t size) {
+		for (std::size_t i = 0; i < size - 1; ++i)
+			result[pos++] = str[i];
+	};
+
+	// Copy the first string and then the rest.
+	copy(first, N);
+	((copy(rest, Ns)), ...);
+
+	// Ensure the result is null-terminated.
+	result[totalSize - 1] = '\0';
+	return std::string(result);
+}
+
+template<detail::SimdType T, size_t Size>
+class bundle {
+	static constexpr size_t alignment = detail::bundle_alignment<T>;
+public:
+	static constexpr size_t size = Size;
+
+	using value_type = T;
+	using bundle_type = bundle;
+	using simd_type = detail::simd_register_info<value_type, Size>;
+	using reg_type = typename detail::simd_register_info<value_type, Size>::reg_type;
+
+	reg_type data;
+
+	bundle() noexcept : bundle(0) {}
+	explicit bundle(const reg_type val) noexcept : data(val) {}
+	explicit bundle(const value_type val) noexcept { data = simd_type::dup(val); }
 
 	[[nodiscard]] bundle operator+(const bundle& other) const {
-        bundle result;
-        result.data.val[0] = vaddq_f32(data.val[0], other.data.val[0]);
-        result.data.val[1] = vaddq_f32(data.val[1], other.data.val[1]);
-        result.data.val[2] = vaddq_f32(data.val[2], other.data.val[2]);
-        result.data.val[3] = vaddq_f32(data.val[3], other.data.val[3]);
-        return result;
-    }
+		return bundle{simd_type::add(data, other.data)};
+	}
+
+	[[nodiscard]] std::array<value_type, Size> to_array() const {
+		return simd_type::store(data);
+	}
+};
+
+template<detail::SimdType T, size_t Size>
+struct std::formatter<bundle<T, Size>> {
+	constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
+
+	template <typename FormatContext>
+	auto format(const bundle<T, Size>& k, FormatContext& ctx) const {
+		return std::format_to(ctx.out(), "bundle<{}, {}> [{}]", typeid(T).name(), k.size, k.to_array());
+	}
+};
+
+inline void test2223() {
+	float32_t v1 = 1.f;
+	const bundle<float32_t, 16> b1{v1};
+	const bundle<float32_t, 16> b2{2.2f};
+
+	auto ggg = b1 + b2;
+	console::print("{}", ggg);
+}
+/*
 
     [[nodiscard]] bundle operator*(const bundle& other) const {
         bundle result;
@@ -410,4 +547,4 @@ namespace types2 {
 		console::print(type::name);
 	}
 
-}
+}*/
