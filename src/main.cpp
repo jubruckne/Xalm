@@ -41,45 +41,34 @@ void error_usage() {
 	exit(1);
 }
 
-#if DEBUG_MODEL
-void debug_tensors(Config &c) {
-	assert(debug_map_cpu().size() == debug_map_cuda().size());
-	for (auto &[name, cpu]: debug_map_cpu()) {
-		DebugTensor &cuda = debug_map_cuda().at(name);
-		float maxerr = cpu.max_err(cuda);
-		std::cout << fmt::format("{} maxerr: {}", name, maxerr) << std::endl;
-	}
-	std::cout << std::endl;
-}
-#endif
-
-void run_completion(const std::string& checkpoint_path, const std::string &device, const std::string &prompt,
-					const int context, int num_steps) {
+void run_completion(const std::string& checkpoint_path, const std::string &prompt, const int context, int num_steps) {
 	auto model_data = Xalm::load(checkpoint_path);
 	auto model = Model::from_xalm(model_data, context);
 
-	console::print("{}", model_data.format());
+	// console::print("{}", model_data.format());
 
 	InferenceState state(model.config);
 	Sampler sampler(model.config);
 	Tokenizer tokenizer(model_data);
 
-	console::print("Model active bytes with full context window: {}\n", model.active_bytes(model.config.max_seq_len));
+	model.token_embedding_table = model.token_embedding_table.convert_to(Type::Q8);
+	//for (int i = 0; i < model.config.n_layers; i++) {
+	//	model.blocks[i].w1 = model.blocks[i].w1.convert_to(Type::Q8);
+	//	model.blocks[i].w2 = model.blocks[i].w2.convert_to(Type::Q8);
+	//	model.blocks[i].w3 = model.blocks[i].w3.convert_to(Type::Q8);
+	//	model.blocks[i].wo = model.blocks[i].wo.convert_to(Type::Q8);
+	//	model.blocks[i].wv = model.blocks[i].wv.convert_to(Type::Q8);
+	//	model.blocks[i].wq = model.blocks[i].wq.convert_to(Type::Q8);
+	//	model.blocks[i].wk = model.blocks[i].wk.convert_to(Type::Q8);
+	//}
+
+	console::print("Model active bytes(m): {:L}\n", model.active_bytes(model.config.max_seq_len) / (1024 * 1024));
 
 	if (num_steps == 0) {
 		// `-n 0` means use the full context length
 		num_steps = model.config.max_seq_len;
 	}
-	if (device == "cuda") {
-		std::cout << "Using CUDA" << std::endl;
-		// model.cuda();
-		// state.cuda();
-	}
-
 	// Do one inference as warmup.
-	// On CPU, this ensures all tensors are loaded into memory via mmap.
-	// On GPU, this ensures all tensors are loaded into device memory and
-	// kernels are compiled + instantiated.
 	model.forward(state, 0, 0);
 	auto su = system_usage{};
 
@@ -95,6 +84,8 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 						   encoding.size(), encoding.size() / (encoding_ms / 1000.0),
 						   (encoding_ms / 1000.0) / encoding.size(), encoding_ms / 1000.0);
 	}
+
+	console::print();
 
 	su.reset();
 	size_t read_bytes = 0;
@@ -138,7 +129,18 @@ void run_completion(const std::string& checkpoint_path, const std::string &devic
 
 void run_test(const std::string &checkpoint_path) {
 	printf("test start\n");
+/*
+	auto t1 = tensor::create<2>(data_type::F32, {16, 16}, "a");
 
+	assert(t1.rank() == 2);
+
+	console::print("name:  {}\n", t1.name());
+	console::print("rank:  {}\n", t1.rank());
+	console::print("shape: {}\n", t1.shape());
+	77console::print("type:  {}\n", data_type::name(t1.type()));
+	console::print("data:  {}\n", t1[0, 0]);
+*/
+/*
 	const auto model1 = Xalm::load("../models/Llama-3.2-1B-Instruct.f8_e4m3.xalm");
 
 
@@ -190,7 +192,7 @@ void run_test(const std::string &checkpoint_path) {
 
 		matmul(out1, a1, b2);
 		fflush(stdout);
-	}
+	}*/
 }
 
 void run_perplexity(const std::string &checkpoint_path, const std::string &device, const std::string &prompt,
@@ -377,6 +379,7 @@ int run_convert(const cxxopts::ParseResult &params) {
 
 
 int main(int argc, char *argv[]) {
+	console::init();
 	/*const std::map<std::string, std::function<int(const cxxopts::ParseResult&)>> commands = {
 	  {"convert", run_convert},
 	};
@@ -414,12 +417,12 @@ int main(int argc, char *argv[]) {
 	std::string checkpoint_path = ""; // e.g. out/model.bin
 	// Options
 	std::string device = "cpu"; // cpu or cuda
-	std::string mode = "completion"; // completion, passkey, or perplexity
+	std::string mode = "test"; // completion, passkey, or perplexity
 	std::string prompt = "Q: What is the meaning of life? A:"; // prompt string
 	std::string prompt_path; // prompt file path
 	int context = 0;
 	// Completion mode options
-	int num_steps = 1024; // number of steps to run for
+	int num_steps = 128; // number of steps to run for
 	// Passkey mode options
 	int n_junk = 250; // number of junk lines to insert
 	int passkey_pos = -1; // passkey position (-1 - random)
@@ -531,7 +534,7 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (mode == "completion") {
-		run_completion(checkpoint_path, device, prompt, context, num_steps);
+		run_completion(checkpoint_path, prompt, context, num_steps);
 		Profiler::report();
 	} else if (mode == "passkey") {
 		run_passkey(checkpoint_path, device, context, n_junk, passkey_pos);

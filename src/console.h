@@ -29,9 +29,17 @@ struct console {
 	static constexpr color_t bright_cyan = 96;    // Bright Cyan
 	static constexpr color_t bright_white = 97;   // Bright White
 
+	static void init() {
+		std::locale::global(std::locale(""));
+	}
+
 	template <typename T>
 	static std::string format(const T& value) {
 		return std::format("{}", value);
+	}
+
+	static void print() {
+		std::cout << "\n";
 	}
 
 	template <typename T>

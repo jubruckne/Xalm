@@ -75,7 +75,7 @@ struct Xalm {
 	};
 
 	[[nodiscard]] static file_info load(const std::string& file_name) {
-		console::print("loading data from file: {}\n", file_name);
+		console::print("loading model {}\n", file_name);
 
 		std::map<std::string, tensor_info> tensors;
 		std::string json_string;
@@ -90,6 +90,8 @@ struct Xalm {
 			throw std::invalid_argument(std::format("bad json size: {} for file size: {}", json_size, file_size));
 		}
 
+		json_size -= sizeof(uint64_t);
+
 		std::vector<char> buf(json_size + 1, 0);
 		stream.read(buf.data(), static_cast<uint32_t>(json_size));
 
@@ -100,48 +102,74 @@ struct Xalm {
 
 		const json header = json::parse(json_string);
 
+		if (header.contains("xalm")) {
+			auto ver = header.at("xalm").value("version", 0);
+
+			if (ver != 1) {
+				throw std::invalid_argument(std::format("xalm version mismatch: {}", ver));
+			}
+		} else {
+			throw std::invalid_argument("invalid file format!");
+		}
+
 		//std::print("{}\n", json_string);
 		//std::flush(std::cout);
 
 		for (auto &[key, val]: header.items()) {
-			if (key == "__metadata__") {
-				metadata = val;
-			} else {
-				// Tensor &tensor = tensors[key];
-				printf("tensor: %s\n", key.c_str());
-				// printf("tensor: %s\n", val.dump().c_str());
+			//std::print("header {}\n", key);
+			//std::flush(std::cout);
+			if (key == "xalm") {
+				continue;
+			}
 
-				auto name = key;
-				auto type_str = val.value("dtype", "");
-				auto type = Type::parse(type_str);
+			auto model_arch = key;
+			// printf("model arch: %s\n", model_arch.c_str());
 
-				auto rank = val.at("shape").size();
-				if (rank > 4) {
-					throw std::invalid_argument("shape exceeds 4 dimensions");
-				}
+			if (model_arch == "LlamaForCausalLM") {
+				metadata = val.at("config");
+				for (auto &[key, val]: val.at("tensors").items()) {
+					auto name = key;
+					auto type_str = val.value("type", "<missing>");
+					auto type = Type::parse(type_str);
 
-				auto shape = std::vector<int>(rank);
-
-				for (size_t i = 0; i < rank && i < 4; i++) {
-					if (val.at("shape")[i].get<int>() != val.at("shape")[i]) {
-						std::print("bad shape");
-						throw std::bad_alloc();
+					auto rank = val.at("shape").size();
+					if (rank > 4) {
+						throw std::invalid_argument("shape exceeds 4 dimensions");
 					}
-					shape[i] = val.at("shape")[i].get<int>();
-				}
 
-				const auto offset_start = static_cast<std::streamoff>(val.at("data_offsets")[0]);
-				const auto offset_end = static_cast<std::streamoff>(val.at("data_offsets")[1]);
-				if (offset_start < 0 || offset_end <= offset_start || offset_end > data_end) {
-					throw std::invalid_argument(std::format("offset out of range"));
-				}
+					auto shape = std::vector<int>(rank);
 
-				tensors.emplace(
-					name,
-					tensor_info{name, type,shape,file_name,
-						static_cast<size_t>(offset_start + data_offset),
-						static_cast<size_t>(offset_end - offset_start)}
-				);
+					for (size_t i = 0; i < rank && i < 4; i++) {
+						if (val.at("shape")[i].get<int>() != val.at("shape")[i]) {
+							std::print("bad shape");
+							throw std::bad_alloc();
+						}
+						shape[i] = val.at("shape")[i].get<int>();
+					}
+
+					const auto offset = val.value("offset", -1ll);
+					if (offset < 0) {
+						throw std::invalid_argument("bad offset");
+					}
+					const auto size = val.value("size", -1ll);
+					if (size < 0) {
+						throw std::invalid_argument("bad size");
+					}
+					auto offset_end = offset + size;
+
+					if (offset_end <= offset || offset_end > data_end) {
+						throw std::invalid_argument(std::format("offset out of range"));
+					}
+
+					//printf("tensor: %s, offset: %llu, size: %llu\n", key.c_str(), offset + data_offset, size);
+
+					tensors.emplace(
+						name,
+						tensor_info{name, type,shape,file_name,
+							static_cast<size_t>(offset + data_offset),
+							static_cast<size_t>(size)}
+					);
+				}
 			}
 		}
 

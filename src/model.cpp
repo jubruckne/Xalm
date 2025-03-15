@@ -46,7 +46,7 @@ void Block::block(const Config& config,
 }
 
 Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
-	system_usage::scoped su{"Model::from_xalm"};
+	// system_usage::scoped su{"Model::from_xalm"};
 	auto config = Config::from_xalm(xalm, context);
 
 	auto load_tensor_data = //task_pool<Xalm::tensor_info, std::span<std::byte>>{
@@ -87,7 +87,7 @@ Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
 	ProgressBar progress(config.n_layers);
 
 	for (int i = 0; i < config.n_layers; ++i) {
-		progress.step(std::format("loading layer {}...", i));
+		progress.step(std::format("layer {}...", i));
 		blocks.emplace_back(
 			i,
 			load_tensor(std::format("l.{}.attn.norm.weight", i),{config.dim}),
@@ -106,6 +106,7 @@ Model Model::from_xalm(Xalm::file_info &xalm, const int context) {
 	}
 
 	progress.done(std::format("{} layers loaded", config.n_layers));
+	console::print();
 
 	auto rms_final_weight = load_tensor("output.norm.weight",{config.dim});
 	auto wcls = config.tie_word_embeddings

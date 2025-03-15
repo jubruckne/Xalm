@@ -15,11 +15,46 @@ concept valid_aligned = Alignment > 0 &&						   // Positive alignment
 						std::has_single_bit(Alignment) &&		   // Power-of-two alignment
 						Alignment >= alignof(T);                   // Meets type's alignment requirements
 
+template <typename T, std::size_t alignment> class AlignedAllocator {
+  public:
+    using value_type = T;
+
+	AlignedAllocator() noexcept = default;
+
+    template <typename U> explicit AlignedAllocator(const AlignedAllocator<U, alignment>& other) noexcept {}
+
+    template <typename U>
+    bool operator==(const AlignedAllocator<U, alignment>& other) const noexcept {
+        return true;
+    }
+
+    template <typename U>
+    bool operator!=(const AlignedAllocator<U, alignment>& other) const noexcept {
+        return false;
+    }
+
+    template <typename U> struct rebind {
+        using other = AlignedAllocator<U, alignment>;
+    };
+
+	// ReSharper disable once CppMemberFunctionMayBeStatic
+    [[nodiscard]] value_type* allocate(const std::size_t n) const {
+		const auto ptr = std::aligned_alloc(alignment, sizeof(T) * n);
+        if (ptr == nullptr)
+            throw std::bad_alloc();
+        return static_cast<value_type*>(ptr);
+    };
+
+	// ReSharper disable once CppMemberFunctionMayBeStatic
+	void deallocate(value_type* const ptr, std::size_t n) const noexcept { std::free(ptr); }
+};
+
 template<aligned_buffer_type T = std::byte, int Alignment = alignof(T)>
 	requires valid_aligned<T, Alignment>
 class buffer {
-	T* _data = nullptr;
-	size_t _size = 0;
+	std::shared_ptr<std::vector<T, AlignedAllocator<T, Alignment>>> _data;
+	size_t _offset;
+	size_t _size;
 
 	constexpr static size_t aligned_allocation_size(const size_t count) noexcept {
 		const size_t byte_size = count * sizeof(T);
@@ -27,71 +62,52 @@ class buffer {
 	}
 
 public:
-	explicit buffer(const size_t size) : _size(size) {
+	buffer(buffer&& other) noexcept = default;
+	buffer& operator=(buffer&& other) noexcept = default;
+	buffer(const buffer&) = default;
+	buffer& operator=(const buffer&) = default;
+
+	explicit buffer(const size_t size) noexcept : _offset(0), _size(size) {
 		if (size > 0) {
-			const size_t alloc_size = aligned_allocation_size(size);
-			void* raw = std::aligned_alloc(Alignment, alloc_size);
-			if (!raw)
-				throw std::bad_alloc();
-			_data = static_cast<T*>(raw);
+			_data = std::make_shared<std::vector<T, AlignedAllocator<T, Alignment>>>(size);
+		} else {
+			_data = nullptr;
 		}
 	}
-
-	~buffer() { std::free(_data); }
 
 	template<aligned_buffer_type V = T>
 	[[nodiscard]] std::span<V> span(const size_t offset, const size_t count) const  {
 		if constexpr(std::is_same_v<T, V>) {
-			return std::span<V>{_data + offset, count};
+			return std::span<V>{_data->data() + offset, count};
 		} else {
-			V* vdata = reinterpret_cast<V*>(_data + offset);
+			V* vdata = reinterpret_cast<V*>(_data->data() + offset);
 			return std::span<V>{vdata + offset, count * sizeof(T) / sizeof(V)};
 		}
 	}
 
 	template<aligned_buffer_type V = T>
 	[[nodiscard]] std::span<V> span() const {
-		return span<V>(0, _size);
+		return span<V>(_offset, _size);
 	}
 
 	template<aligned_buffer_type V = T>
 	[[nodiscard]] std::span<V> span(const size_t offset) const {
-		return span<V>(offset, _size - offset);
-	}
-
-	// Move semantics
-	buffer(buffer&& other) noexcept : _data(other._data), _size(other._size) {
-		other._data = nullptr;
-		other._size = 0;
-	}
-
-	buffer& operator=(buffer&& other) noexcept {
-		if (this != &other) {
-			std::free(_data);
-			_data = other._data;
-			_size = other._size;
-			other._data = nullptr;
-			other._size = 0;
-		}
-		return *this;
+		return span<V>(_offset + offset, _size - offset);
 	}
 
 	template<aligned_buffer_type V = T>
-	[[nodiscard]] auto get() const {
-		return reinterpret_cast<V*>(_data);
+	[[nodiscard]] V* get() const {
+		auto xxxx = _data->data();
+		return reinterpret_cast<V*>(xxxx);
 	}
 
 	// Implicit conversions
-	[[nodiscard]] operator T*() noexcept { return _data; }
-	[[nodiscard]] operator const T*() const noexcept { return _data; }
+	[[nodiscard]] operator T*() noexcept { return _data->data(); }
+	[[nodiscard]] operator const T*() const noexcept { return _data->data(); }
 
 	// Accessors
 	[[nodiscard]] size_t bytes_size() const noexcept { return _size * sizeof(T); }
 	[[nodiscard]] size_t size() const noexcept { return _size; }
 	[[nodiscard]] static constexpr size_t alignment() noexcept { return Alignment; }
 	[[nodiscard]] bool empty() const noexcept { return _size == 0; }
-
-	// Disallow copying
-	buffer(const buffer&) = delete;
-	buffer& operator=(const buffer&) = delete;
 };

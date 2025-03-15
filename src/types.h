@@ -1,7 +1,7 @@
 #pragma once
-#include "console.h"
 #include <cassert>
 #include <cstdint>
+#include "console.h"
 #include "types2.h"
 
 #if defined(__AVX2__) && defined(__F16C__)
@@ -12,6 +12,238 @@ using bfloat16_t = uint16_t;
 #elif defined(__ARM_NEON) || defined(__aarch64__)
 #include <arm_neon.h> // ARM NEON
 #endif
+
+namespace DType {
+	struct type {
+		enum class type_code {
+			int8,
+			uint8,
+			int16,
+			int32,
+			float16,
+			float32,
+			bfloat16,
+			iq4
+		};
+
+		constexpr explicit type(const type_code code) : code(code) {}
+
+		constexpr operator type_code() const { return code; }
+		constexpr type_code val() const { return code; }
+
+		type_code code;
+	};
+
+	inline constexpr type int8{type::type_code::int8};
+	inline constexpr type uint8{type::type_code::uint8};
+	inline constexpr type int16{type::type_code::int16};
+	inline constexpr type int32{type::type_code::int32};
+	inline constexpr type float16{type::type_code::float16};
+	inline constexpr type float32{type::type_code::float32};
+	inline constexpr type bfloat16{type::type_code::bfloat16};
+	inline constexpr type iq4{type::type_code::iq4};
+	type promote_types(const type& t1, const type& t2);
+
+	template<typename T>
+	concept ResultType = std::is_same_v<T, float32_t> || std::is_same_v<T, float16_t> || std::is_same_v<T, bfloat16_t>;
+
+	template<type T, ResultType R, size_t N=1>
+	struct accessor;
+
+	template<type TYPE>
+	struct traits;
+
+	template <>
+	struct traits<float32> {
+		using native_type = float32_t;
+		static constexpr size_t bit_size = 32;
+		static constexpr std::string_view name = "f32";
+		static constexpr type type = float32;
+		static constexpr type::type_code type_code = type.code;
+		template<ResultType T, size_t N=1>
+		using accessor = accessor<float32, T, N>;
+	};
+
+	template <>
+	struct traits<float16> {
+		using native_type = float16_t;
+		static constexpr size_t bit_size = 16;
+		static constexpr std::string_view name = "f16";
+		static constexpr type type = float16;
+		static constexpr type::type_code type_code = type.code;
+		template<ResultType T, size_t N=1>
+		using accessor = accessor<float16, T, N>;
+	};
+
+	template <>
+	struct traits<bfloat16> {
+		static constexpr size_t bit_size = 16;
+		static constexpr std::string_view name = "bf16";
+		static constexpr type type = bfloat16;
+		static constexpr type::type_code type_code = type.code;
+		using native_type = bfloat16_t;
+		template<ResultType T, size_t N=1>
+		using accessor = accessor<bfloat16, T, N>;
+	};
+
+	template <>
+	struct traits<iq4> {
+		static constexpr size_t bit_size = 4;
+		static constexpr std::string_view name = "iq4";
+		static constexpr type type = iq4;
+		static constexpr type::type_code type_code = type.code;
+		using native_type = void;
+		template<ResultType T, size_t N=1>
+		using accessor = accessor<iq4, T, N>;
+	};
+
+	template <ResultType R>
+	struct accessor<float32, R, 1> {
+		using native_type = float32_t;
+		using result_type = float32_t;
+
+		static result_type load(const native_type* data) {
+			return *reinterpret_cast<R*>(data);
+		}
+		static void store(native_type* data, const result_type value) {
+			*reinterpret_cast<R*>(data) = value;
+		}
+	};
+
+	template <>
+	struct accessor<float32, float32_t, 4> {
+		using native_type = float32_t;
+		using result_type = float32x4_t;
+
+		static result_type load(const native_type* data) {
+			return vld1q_f32(data);
+		}
+		static void store(native_type* data, const result_type value) {
+			vst1q_f32(data, value);
+		}
+	};
+
+	template <>
+	struct accessor<float32, float16_t, 8> {
+		using native_type = float32_t;
+		using result_type = float16x8_t;
+
+		static result_type load(const native_type* data) {
+			const auto [val] = vld1q_f32_x2(data);
+			return vcombine_f16(
+				vcvt_f16_f32(val[0]),
+				vcvt_f16_f32(val[1])
+			);
+		}
+		
+		static void store(native_type* data, const result_type value) {
+			const float32x4x2_t hl = {
+				vcvt_f32_f16(vget_low_f16(value)),
+				vcvt_f32_f16(vget_high_f16(value))
+			};
+
+			vst1q_f32_x2(data, hl);
+		}
+	};
+
+
+	template <>
+	struct accessor<float32, float32_t, 16> {
+		using native_type = float32_t;
+		using result_type = float32x4x4_t;
+
+		static result_type load(const native_type* data) {
+			return vld1q_f32_x4(data);
+		}
+		static void store(native_type* data, const result_type value) {
+			vst1q_f32_x4(data, value);
+		}
+	};
+
+	template <>
+	struct accessor<float16, float16_t, 8> {
+		using native_type = float16_t;
+		using result_type = float16x8_t;
+
+		static result_type load(const native_type* data) {
+			return vld1q_f16(data);
+		}
+		static void store(native_type* data, const result_type value) {
+			vst1q_f16(data, value);
+		}
+	};
+
+	template <>
+	struct accessor<float16, float16_t, 16> {
+		using native_type = float16_t;
+		using result_type = float16x8x2_t;
+
+		static result_type load(const native_type* data) {
+			return vld1q_f16_x2(data);
+		}
+		static void store(native_type* data, const result_type value) {
+			vst1q_f16_x2(data, value);
+		}
+	};
+
+	template <>
+	struct accessor<float16, float16_t, 32> {
+		using native_type = float16_t;
+		using result_type = float16x8x4_t;
+
+		static result_type load(const native_type* data) {
+			return vld1q_f16_x4(data);
+		}
+		static void store(native_type* data, const result_type value) {
+			vst1q_f16_x4(data, value);
+		}
+	};
+
+	template <>
+	struct accessor<iq4, float16_t, 32> {
+		using native_type = uint8_t;
+		using result_type = float16x8x4_t;
+
+		static result_type load(const native_type* data) {
+			// Load 16 bytes (each byte contains two 4-bit values)
+			const uint8x16_t q = vld1q_u8(data);
+
+			// Extract lower 4 bits: AND with 0x0F
+			const uint8x16_t lower = vandq_u8(q, vdupq_n_u8(0x0F));
+
+			// Extract upper 4 bits: Shift right by 4
+			const uint8x16_t upper = vshrq_n_u8(q, 4);
+
+			// Convert to 16-bit
+			const uint16x8_t lower_u16 = vmovl_u8(vget_low_u8(lower));
+			const uint16x8_t upper_u16 = vmovl_u8(vget_low_u8(upper));
+			const uint16x8_t lower_u16_h = vmovl_u8(vget_high_u8(lower));
+			const uint16x8_t upper_u16_h = vmovl_u8(vget_high_u8(upper));
+
+			// Convert to float16x8_t
+			float16x8_t lower_f16 = vcvtq_f16_u16(lower_u16);
+			float16x8_t upper_f16 = vcvtq_f16_u16(upper_u16);
+			float16x8_t lower_f16_h = vcvtq_f16_u16(lower_u16_h);
+			float16x8_t upper_f16_h = vcvtq_f16_u16(upper_u16_h);
+
+			// Store in float16x8x4_t
+			return {lower_f16, upper_f16, lower_f16_h, upper_f16_h};
+		}
+		static void store(native_type* data, const result_type value) {
+		}
+	};
+
+
+
+	void hdhsfgdsh() {
+		constexpr auto load = traits<float32>::accessor<float32_t, 4>::load;
+		auto x = load(nullptr);
+
+	}
+
+}
+
+
 
 template<int8_t N>
 consteval float EXP2() {
@@ -87,53 +319,6 @@ using f8e3m4_t = f8_t<3, 4>;
 using f8e4m3_t = f8_t<4, 3>;
 using f8e5m2_t = f8_t<5, 2>;
 
-struct qi4_t {
-	static constexpr int block_length = 32;
-
-	struct block {
-		float16_t scale;
-		uint8_t v[block_length / 2];
-	};
-
-	static constexpr int block_size = sizeof(block);
-
-
-	static constexpr int8_t lut[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
-
-	static constexpr float16_t lut2[16] = {-1.000000, -0.818898, -0.653543, -0.511811, -0.385827, -0.275591,
-										   -0.173228, -0.078740, 0.007874,	0.102362,  0.196850,  0.309213,
-										   0.437323,  0.583307,	 0.770787,	1.000000};
-
-	static void store_f32(uint8_t* data, const size_t index, const float value) {
-		// Quantization logic: map the float value to a 4-bit range (0 to 15)
-		auto q = static_cast<uint8_t>(std::round(value * 15.0f));
-		q = std::min<uint8_t>(15, q);
-
-		const size_t byte_index = index / 2;
-		const size_t nibble_index = index % 2;
-
-		if (nibble_index == 0) {
-			data[byte_index] = (data[byte_index] & 0x0F) | (q << 4);
-		} else {
-			data[byte_index] = (data[byte_index] & 0xF0) | (q & 0x0F);
-		}
-	}
-
-	static float load_f32(const uint8_t* data, const size_t index) {
-		const size_t byte_index = index / 2;
-		const size_t nibble_index = index % 2;
-
-		uint8_t quantized;
-		if (nibble_index == 0) {
-			quantized = (data[byte_index] >> 4) & 0x0F;
-		} else {
-			quantized = data[byte_index] & 0x0F;
-		}
-
-		return static_cast<float32_t>(quantized) / 15.0f;
-	}
-};
-
 static float32_t bf16_to_f32(const uint16_t h) {
 	const uint32_t i = static_cast<uint32_t>(h) << 16;
 	return *reinterpret_cast<const float32_t*>(&i);
@@ -159,6 +344,7 @@ struct Type {
 	static const Type F8_E4M3;
 	static const Type F8_E5M2;
 	static const Type U8;
+	static const Type Q8;
 
 	int id;
 	uint8_t bit_size;
@@ -186,6 +372,8 @@ struct Type {
 			return "F8_E5M2";
 		if (*this == Type::U8)
 			return "U8";
+		if (*this == Type::Q8)
+			return "Q8";
 		return "UNKNOWN";
 	}
 
@@ -206,6 +394,8 @@ struct Type {
 			return offset * sizeof(uint8_t);
 		if (*this == Type::U8)
 			return offset * sizeof(uint8_t);
+		if (*this == Type::Q8)
+			return offset * sizeof(int8_t);
 		return 0;
 	}
 
@@ -230,6 +420,8 @@ struct Type {
 			return f8e4m3_t::to_float(*static_cast<const f8e4m3_t*>(d));
 		if (id == Type::F8_E5M2.id)
 			return f8e5m2_t::to_float(*static_cast<const f8e5m2_t*>(d));
+		if (id == Type::Q8)
+			return (1.f / 100.f) * static_cast<float32_t>(*static_cast<const int8_t*>(d));
 
 		return 666.66f;
 	}
@@ -263,6 +455,13 @@ struct Type {
 			static_cast<f8e5m2_t*>(data)[offset] = f8e5m2_t::from(value);
 			return;
 		}
+		if (id == Type::Q8.id) {
+			static_cast<int8_t*>(data)[offset] = static_cast<int8_t>(std::ranges::clamp(
+					std::round(value * 100.f), static_cast<float>(std::numeric_limits<int8_t>::lowest()),
+					static_cast<float>(std::numeric_limits<int8_t>::max())));
+			return;
+		}
+
 		throw std::invalid_argument("Invalid type");
 	}
 
@@ -291,6 +490,8 @@ struct Type {
 			return Type::F8_E5M2;
 		if (type_str == "U8")
 			return Type::U8;
+		if (type_str == "Q8")
+			return Type::Q8;
 
 		console::print("\nERROR: invalid type: {}\n", type_str);
 		assert(false && "invalid type");
@@ -310,21 +511,7 @@ constexpr Type Type::F8_E3M4{5, sizeof(uint8_t) * 8};
 constexpr Type Type::F8_E4M3{6, sizeof(uint8_t) * 8};
 constexpr Type Type::F8_E5M2{7, sizeof(uint8_t) * 8};
 constexpr Type Type::U8{8, sizeof(uint8_t) * 8};
-
-struct qi8_t {
-	static constexpr int block_length = 8;
-	static constexpr int block_size = sizeof(uint32_t) * 2;
-
-	static void store_f32(uint8_t* data, const size_t index, const float32_t value) {
-		const auto d = reinterpret_cast<int8_t*>(data);
-		d[index] = static_cast<int8_t>(std::round(std::clamp(value * 8.0f, -128.0f, 127.0f)));
-	}
-
-	static float32_t load_f32(const uint8_t* data, const size_t index) {
-		const auto q = reinterpret_cast<const int8_t*>(data)[index];
-		return static_cast<float32_t>(q) / 8.0f;
-	}
-};
+constexpr Type Type::Q8{9, sizeof(int8_t) * 8};
 
 // A helper template to select a type based on an index
 template<size_t Index, typename... Types>
@@ -691,3 +878,5 @@ private:
 	template<typename>
 	static constexpr bool dependent_false = false;
 };
+
+using f6e2m3_t = custom_float<2, 3, true, false, 3>; // Linear mapping

@@ -35,81 +35,6 @@ def align_offset(offset, alignment=32):
     """Round up offset to the nearest multiple of alignment."""
     return (offset + (alignment - 1)) // alignment * alignment
 
-def save_xalm_binary(filename: str, tensors: dict, metadata: dict):
-    print(f"sorting {len(tensors)} tensors...")
-
-    tensor_names = sort_tensor_names(tensors)
-
-    current_offset = 0
-
-    print("pre-processing tensors...", flush=True)
-
-    for tensor_name in tensor_names:
-        print(f"  {tensor_name}...", end="")
-        t = tensors[tensor_name]
-        current_offset = align_offset(current_offset)
-        storage = t.untyped_storage()
-        data_ptr = storage.data_ptr()
-        nbytes = storage.nbytes()
-        raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
-        hash_value = xxhash.xxh3_64(raw_data)
-        metadata["tensors"][tensor_name]["hash"] = hash_value.hexdigest()
-        print(f" hash={metadata["tensors"][tensor_name]["hash"]}", end="")
-        metadata["tensors"][tensor_name]["offset"] = current_offset
-        print(f" offset={metadata["tensors"][tensor_name]["offset"]}", end="")
-        metadata["tensors"][tensor_name]["size"] = nbytes
-        print(f" size={metadata["tensors"][tensor_name]["size"]}", flush=True)
-        current_offset += nbytes
-
-    print(f"\nsaving {filename}...", end="", flush=True)
-    torch.save(tensors, filename)
-
-    with open(filename, "wb") as f:
-        # Convert metadata to JSON
-        metadata_json = json.dumps(metadata).encode("utf-8")
-        metadata_size = len(metadata_json)
-        print(f" meta size={metadata_size},", end="")
-
-        f.write(struct.pack("Q", metadata_size))
-        f.write(metadata_json)
-
-        # Track the current file offset
-        padding = align_offset(f.tell() + 128, 4096) - f.tell()
-        print(f" meta padding={padding},", end="")
-        if padding > 0:
-            f.write(b"\x00" * padding)
-
-        metadata_size = f.tell()
-        f.seek(0)
-        f.write(struct.pack("Q", metadata_size))
-        f.seek(metadata_size)
-        print(f" start of data blob={f.tell()}", flush=True)
-        print(f"\nwriting tensor data...")
-
-        current_offset = f.tell()
-
-        # Write tensor data sequentially with alignment
-        for tensor_name in tensor_names:
-            current_offset = f.tell()
-            print(f"  {tensor_name}... offset: {current_offset}", flush=True)
-
-            # Ensure alignment
-            aligned_offset = align_offset(current_offset)
-            padding = aligned_offset - current_offset
-            if padding > 0:
-                f.write(b"\x00" * padding)
-
-            storage = tensors[tensor_name].untyped_storage()
-            data_ptr = storage.data_ptr()
-            nbytes = storage.nbytes()
-            raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
-            f.write(raw_data)
-            del tensors[tensor_name]
-            del raw_data
-            gc.collect()
-
-    print(f"done!")
-
 class XTensor:
     def __init__(self, t: torch.Tensor, name: str):
         self.name = name
@@ -297,30 +222,104 @@ class Metadata:
             raise Exception(f"unexpected Architecture: {arch}!")
 
     def to_dict(self) -> dict:
-        result = {"xalm": {"version": 1}, "arch": self.arch}
+        arch = {}
         if self.arch == "MistralForCausalLM" or self.arch == "LlamaForCausalLM":
-            result["dim"] = str(self.dim)
-            result["hidden_dim"] = str(self.hidden_dim)
-            result["head_dim"] = str(self.head_dim)
-            result["n_layers"] = str(self.n_layers)
-            result["n_heads"] = str(self.n_heads)
-            result["n_kv_heads"] = str(self.n_kv_heads)
-            result["vocab_size"] = str(self.vocab_size)
-            result["max_seq_len"] = str(self.max_seq_len)
-            result["bos_token_id"] = str(self.bos_token_id)
-            result["eos_token_id"] = str(self.eos_token_id)
-            result["rope_theta"] = str(self.rope_theta)
-            result["rotary_dim"] = str(self.rotary_dim)
-            result["norm_eps"] = str(self.norm_eps)
-            result["norm_type"] = str(self.norm_type)
-            result["act_type"] = str(self.act_type)
-            result["tie_word_embeddings"] = str(self.tie_word_embeddings)
+            arch["dim"] = str(self.dim)
+            arch["hidden_dim"] = str(self.hidden_dim)
+            arch["head_dim"] = str(self.head_dim)
+            arch["n_layers"] = str(self.n_layers)
+            arch["n_heads"] = str(self.n_heads)
+            arch["n_kv_heads"] = str(self.n_kv_heads)
+            arch["vocab_size"] = str(self.vocab_size)
+            arch["max_seq_len"] = str(self.max_seq_len)
+            arch["bos_token_id"] = str(self.bos_token_id)
+            arch["eos_token_id"] = str(self.eos_token_id)
+            arch["rope_theta"] = str(self.rope_theta)
+            arch["rotary_dim"] = str(self.rotary_dim)
+            arch["norm_eps"] = str(self.norm_eps)
+            arch["norm_type"] = str(self.norm_type)
+            arch["act_type"] = str(self.act_type)
+            arch["tie_word_embeddings"] = str(self.tie_word_embeddings)
         else:
             raise Exception(f"unexpected Architecture: {self.arch}!")
 
-        result["tensors"] = self.tensors
+        return {"xalm": {"version": 1}, self.arch: {"config": arch, "tensors": self.tensors}}
 
-        return result
+
+def save_xalm_binary(filename: str, tensors: dict, metadata: Metadata):
+    print(f"sorting {len(tensors)} tensors...")
+
+    tensor_names = sort_tensor_names(tensors)
+
+    current_offset = 0
+
+    print("pre-processing tensors...", flush=True)
+
+    for tensor_name in tensor_names:
+        print(f"  {tensor_name}...", end="")
+        t = tensors[tensor_name]
+        current_offset = align_offset(current_offset)
+        storage = t.untyped_storage()
+        data_ptr = storage.data_ptr()
+        nbytes = storage.nbytes()
+        raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
+        hash_value = xxhash.xxh3_64(raw_data)
+        metadata.tensors[tensor_name]["hash"] = hash_value.intdigest()
+        print(f" hash={metadata.tensors[tensor_name]["hash"]}", end="")
+        metadata.tensors[tensor_name]["offset"] = current_offset
+        print(f" offset={metadata.tensors[tensor_name]["offset"]}", end="")
+        metadata.tensors[tensor_name]["size"] = nbytes
+        print(f" size={metadata.tensors[tensor_name]["size"]}", flush=True)
+        current_offset += nbytes
+
+    print(f"\nsaving {filename}...", end="", flush=True)
+    torch.save(tensors, filename)
+
+    with open(filename, "wb") as f:
+        # Convert metadata to JSON
+        metadata_json = json.dumps(metadata.to_dict()).encode("utf-8")
+        metadata_size = len(metadata_json)
+        print(f" meta size={metadata_size},", end="")
+
+        f.write(struct.pack("Q", metadata_size))
+        f.write(metadata_json)
+
+        # Track the current file offset
+        padding = align_offset(f.tell() + 128, 4096) - f.tell()
+        print(f" meta padding={padding},", end="")
+        if padding > 0:
+            f.write(b"\x00" * padding)
+
+        metadata_size = f.tell()
+        f.seek(0)
+        f.write(struct.pack("Q", metadata_size))
+        f.seek(metadata_size)
+        print(f" start of data blob={f.tell()}", flush=True)
+        print(f"\nwriting tensor data...")
+
+        current_offset = f.tell()
+
+        # Write tensor data sequentially with alignment
+        for tensor_name in tensor_names:
+            current_offset = f.tell()
+            print(f"  {tensor_name}... offset: {current_offset}", flush=True)
+
+            # Ensure alignment
+            aligned_offset = align_offset(current_offset)
+            padding = aligned_offset - current_offset
+            if padding > 0:
+                f.write(b"\x00" * padding)
+
+            storage = tensors[tensor_name].untyped_storage()
+            data_ptr = storage.data_ptr()
+            nbytes = storage.nbytes()
+            raw_data = (ctypes.c_ubyte * nbytes).from_address(data_ptr)
+            f.write(raw_data)
+            del tensors[tensor_name]
+            del raw_data
+            gc.collect()
+
+    print(f"done!")
 
 # this is a horrible gpt-2 unicode byte encoder hack from https://github.com/openai/gpt-2/blob/master/src/encoder.py#L9
 # this has poisoned all HF tokenizer configs that use ByteLevel decoder/preprocessor
@@ -1160,7 +1159,7 @@ if __name__ == "__main__":
             #save_file(sort_tensors(tensors), args.output, metadata.to_dict())
             #print(sort_tensors(tensors).keys())
 
-            save_xalm_binary(args.output, tensors, metadata.to_dict())
+            save_xalm_binary(args.output, tensors, metadata)
 
             print(f"saved to {args.output}")
 

@@ -53,15 +53,14 @@ consteval bool is_dynamic(const T value) {
 }
 
 template<typename>
-consteval std::string_view type_name() {
-	return "void";
-}
+consteval std::string_view type_name();
+
 template<>
 consteval std::string_view type_name<float32_t>() {
 	return "float32_t";
 }
 template<>
-consteval std::string_view type_name<float16_t>() {
+constexpr std::string_view type_name<float16_t>() {
 	return "float16_t";
 }
 template<>
@@ -84,6 +83,15 @@ template<>
 consteval std::string_view type_name<f8e2m5_t>() {
 	return "f8e2m5_t";
 }
+template<>
+consteval std::string_view type_name<int8_t>() {
+	return "int8_t";
+}
+
+template<typename T>
+constexpr std::string_view type_name(const T*) {
+	return type_name<std::remove_cvref_t<T>>();
+}
 
 #include <arm_neon.h>
 
@@ -95,16 +103,16 @@ concept NativeTypes = std::is_same_v<T, float32_t> || std::is_same_v<T, float16_
 
 template<typename T>
 concept AllowedTypes = std::is_same_v<T, float32_t> || std::is_same_v<T, float16_t> || std::is_same_v<T, bfloat16_t> ||
-					   std::is_same_v<T, f8e5m2_t> || std::is_same_v<T, f8e4m3_t>;
+					   std::is_same_v<T, f8e5m2_t> || std::is_same_v<T, f8e4m3_t> || std::is_same_v<T, int8_t>;
 
-template<AllowedTypes T, int N = dynamic<int>, int D = dynamic<int>>
-static void matmul(float *__restrict__ xout, const float *__restrict__ x, const T *__restrict__ w, const int n = N,
+template<NativeTypes TX, AllowedTypes TW, int N = dynamic<int>, int D = dynamic<int>>
+static void matmul(float *__restrict__ xout, const TX *__restrict__ x, const TW *__restrict__ w, const int n = N,
 				   const int d = D) noexcept {
 	// W (d,n) @ x (n,) -> xout (d,)
-	profile(std::format("matmul(float*, float*, {}, {}, {})", type_name<T>(), n, d));
+	profile(std::format("matmul(float, float, {}, {}, {})", type_name<TW>(), n, d));
 
-	assert(n % 16 == 0);
-	assert(d % 16 == 0);
+	assert(n % 32 == 0);
+	assert(d % 32 == 0);
 	assert(reinterpret_cast<uintptr_t>(xout) % 8 == 0);
 	assert(reinterpret_cast<uintptr_t>(x) % 8 == 0);
 	assert(reinterpret_cast<uintptr_t>(w) % 8 == 0);
@@ -116,18 +124,20 @@ static void matmul(float *__restrict__ xout, const float *__restrict__ x, const 
 		float val = 0.0f;
 #pragma omp simd
 		for (j = 0; j < n; j++) {
-			if constexpr (std::is_same<T, float32_t>() || std::is_same<T, float16_t>()) {
+			if constexpr (std::is_same<TW, float32_t>() || std::is_same<TW, float16_t>()) {
 				val += w[i * n + j] * x[j];
-			} else if constexpr (std::is_same<T, bfloat16_t>()) {
+			} else if constexpr (std::is_same<TW, bfloat16_t>()) {
 				val += bf16_to_f32(reinterpret_cast<const uint16_t *>(w)[i * n + j]) * x[j];
+			} else if constexpr (std::is_same<TW, int8_t>()) {
+				val += Type::Q8.get_float(reinterpret_cast<const int8_t *>(w), i * n + j) * x[j];
 			} else {
-				val += T::to_float(w[i * n + j]) * x[j];
+				val += TW::to_float(w[i * n + j]) * x[j];
 			}
 		}
 		xout[i] = val;
 	}
 }
-
+/*
 [[maybe_unused]] static void matmul(float *__restrict__ xout, const float *__restrict__ x,
 									const f8e4m3_t *__restrict__ w, const int n, const int d) noexcept {
 	// W (d,n) @ x (n,) -> xout (d,)
@@ -175,27 +185,31 @@ static void matmul(float *__restrict__ xout, const float *__restrict__ x, const 
 		xout[i] = val;
 	}
 }
-
+*/
 void matmul(float *__restrict__ xout, const float *__restrict__ x, const Tensor& w, const int n, const int d) noexcept {
 	switch (w.type) {
 		case Type::F32: {
-			matmul<float32_t>(xout, x,w.get_buffer()->get<float32_t>(), n, d);
+			matmul<float32_t, float32_t>(xout, x,w.get_buffer()->get<float32_t>(), n, d);
 			return;
 		}
 		case Type::F16: {
-			matmul<float16_t>(xout, x,w.get_buffer()->get<float16_t>(), n, d);
+			matmul<float32_t, float16_t>(xout, x,w.get_buffer()->get<float16_t>(), n, d);
 			return;
 		}
 		case Type::BF16: {
-			matmul<bfloat16_t>(xout, x,w.get_buffer()->get<bfloat16_t>(), n, d);
+			matmul<float32_t, bfloat16_t>(xout, x,w.get_buffer()->get<bfloat16_t>(), n, d);
 			return;
 		}
 		case Type::F8_E4M3: {
-			matmul<f8e4m3_t>(xout, x,w.get_buffer()->get<f8e4m3_t>(), n, d);
+			matmul<float32_t, f8e4m3_t>(xout, x,w.get_buffer()->get<f8e4m3_t>(), n, d);
 			return;
 		}
 		case Type::F8_E5M2: {
-			matmul<f8e5m2_t>(xout, x, w.get_buffer()->get<f8e5m2_t>(), n, d);
+			matmul<float32_t, f8e5m2_t>(xout, x, w.get_buffer()->get<f8e5m2_t>(), n, d);
+			return;
+		}
+		case Type::Q8: {
+			matmul<float32_t, int8_t>(xout, x, w.get_buffer()->get<int8_t>(), n, d);
 			return;
 		}
 		default: {
@@ -212,7 +226,7 @@ void matmul(const Tensor& xout, const Tensor& a, const Tensor& b) noexcept {
 }
 
 static void rmsnorm(float* o, const float* x, const RmsNormType auto* weight, const int size, const float eps)  {
-	profile();
+	profile(std::format("rmsnorm(float, float, {}, {})", type_name(weight), size));
 
 	float rms = 0.0f;
 	for (int i = 0; i < size; ++i) {
@@ -236,7 +250,7 @@ static void rmsnorm(float* o, const float* x, const Tensor& w, const int size, c
 			return;
 		}
 		default:
-			throw std::runtime_error("rmsnorm: unsupported data type");
+			throw std::runtime_error(std::format("rmsnorm: unsupported data type {}", w.type.name()));
 	}
 }
 
@@ -268,7 +282,7 @@ static void rmsnorm(float* o, const float* x, const Tensor& w, const int size, c
 
 // Compute the softmax of an input vector `x` of length `size` and store it in `o`.
 static void softmax(float *__restrict__ o, const float *__restrict__ x, const int size) {
-	profile();
+	profile(std::format("softmax(float, float)"));
 
 	float score_max = std::numeric_limits<float>::lowest();
 	for (int i = 0; i < size; ++i) {
@@ -292,9 +306,8 @@ inline float silu(const float x) { return x / (1.0f + expf(-x)); }
 
 inline float clip(const float x, const float v) { return x < -v ? -v : (x > v ? v : x); }
 
-// TODO annotate me
 static void rope(float *vec, const int d, const int head_dim, const int pos, const float theta, const int rotary_dim) {
-	profile();
+	profile(std::format("rope(float)", d, head_dim, pos, theta, rotary_dim));
 
 	for (int i = 0; i < d; i += 2) {
 		const int j_head = i % head_dim;
@@ -361,8 +374,6 @@ void Block::_block_cpu(const Config& config,
 										 // cache is a ring buffer
 					   const int kv_len // number of tokens in the kv cache that we will attend over
 ) const {
-	profile();
-
 	// attention pre-norm
 	switch (config.norm_type) {
 		case LayerNormType::RMSNorm: {
@@ -392,11 +403,10 @@ void Block::_block_cpu(const Config& config,
 	}
 
 	// key and value point to the kv cache
-	float16_t *kb = key_cache;
-	float16_t *vb = value_cache;
+	float16_t* kb = key_cache;
+	float16_t* vb = value_cache;
 
 	{
-		profile("rope");
 		// RoPE relative positional encoding: complex-valued rotate q and k in each head
 		rope(s.q(), q_dim, config.head_dim, pos, config.rope_theta, config.rotary_dim);
 		rope(s.k(), kv_dim, config.head_dim, pos, config.rope_theta, config.rotary_dim);
@@ -457,13 +467,11 @@ void Block::_block_cpu(const Config& config,
 	}
 
 	{
-		profile("mlp");
 		// mix self.w2(F.silu(self.w1(x)) * self.w3(x))
 		// Note this is a feedforward with a GLU, not a simple MLP.
 		matmul(s.hb(), s.xb(), w1, config.dim, config.hidden_dim);
 		matmul(s.hb2(), s.xb(), w3, config.dim, config.hidden_dim);
 		{
-			profile("mlp_act");
 			switch (config.act) {
 				case ActivationType::GELU: {
 					for (int i = 0; i < config.hidden_dim; ++i) {
@@ -547,8 +555,6 @@ void ffn_cpu(float *xout, const float *x, const float *w1, const float *w2, cons
 }
 
 void Model::_copy_embedding(const InferenceState &s, const int token) const {
-	profile();
-
 	switch (token_embedding_table.type) {
 		case Type::F32: {
 			const auto *emb = token_embedding_table.get_buffer()->get<float>();
@@ -575,6 +581,13 @@ void Model::_copy_embedding(const InferenceState &s, const int token) const {
 			const auto *emb = token_embedding_table.get_buffer()->get<f8e4m3_t>();
 			for (int i = 0; i < config.dim; ++i) {
 				s.x()[i] = f8e4m3_t::to_float(emb[token * config.dim + i]);
+			}
+			break;
+		}
+		case Type::Q8: {
+			const auto *emb = token_embedding_table.get_buffer()->get<int8_t>();
+			for (int i = 0; i < config.dim; ++i) {
+				s.x()[i] = Type::Q8.get_float(emb, token * config.dim + i);
 			}
 			break;
 		}

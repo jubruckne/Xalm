@@ -11,7 +11,7 @@ VENDOR_DIR := 3rdparty
 ASM_DIR := $(BUILD)/asm
 BIN_DIR := .
 
-CFLAGS := -g -Wall -Wpointer-arith -march=native -O3 -Werror -I$(VENDOR_DIR) -std=c++23
+CFLAGS := -g -Wall -Wpointer-arith -march=native -O0 -Werror -I$(VENDOR_DIR) -std=c++23
 LDFLAGS := -lm
 
 ifeq ($(UNAME), Darwin)	# MAC OS

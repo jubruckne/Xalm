@@ -226,21 +226,12 @@ std::string Tensor::format(const size_t show_rows, const size_t show_columns) co
 Tensor Tensor::convert_to(const Type target_type) const {
 	assert(!buffer.empty() && "Tensor data cannot be null");
 
-	if (target_type != Type::F32 && target_type != Type::F16 && target_type != Type::F8_E2M5 &&
-		target_type != Type::F8_E3M4 && target_type != Type::F8_E4M3 && target_type != Type::F8_E5M2) {
-		std::cerr << "convert_dtype only supports F32, F16, F8 conversions." << std::endl;
-		exit(0);
-	}
-
 	if (type == target_type) {
 		std::cerr << "Tensor is already of target dtype." << std::endl;
 		exit(0);
 	}
 
-	//std::vector<uint8_t> new_data(linear_length * target_type.bit_size / 8);
-
 	auto converted = Tensor::zeroes(target_type, this->shape, this->name);
-
 
 	if (type == Type::F16 && target_type == Type::F8_E4M3) {
 		const auto src = buffer.span<float16_t>();
@@ -266,14 +257,38 @@ Tensor Tensor::convert_to(const Type target_type) const {
 		for (size_t i = 0; i < this->linear_length; ++i) {
 			dst[i] = f8e3m4_t::from(src[i]);
 		}
+	} else if (type == Type::BF16 && target_type == Type::F8_E3M4) {
+		const auto src = buffer.span<bfloat16_t>();
+		const auto dst = converted.buffer.span<f8e3m4_t>();
+		for (size_t i = 0; i < this->linear_length; ++i) {
+			dst[i] = f8e3m4_t::from(static_cast<float32_t>(src[i]));
+		}
+	} else if (type == Type::BF16 && target_type == Type::F8_E4M3) {
+		const auto src = buffer.span<bfloat16_t>();
+		const auto dst = converted.buffer.span<f8e4m3_t>();
+		for (size_t i = 0; i < this->linear_length; ++i) {
+			dst[i] = f8e4m3_t::from(static_cast<float32_t>(src[i]));
+		}
+	} else if (type == Type::BF16 && target_type == Type::Q8) {
+		const auto src = buffer.span<bfloat16_t>();
+		const auto dst = converted.buffer.span<int8_t>();
+		for (size_t i = 0; i < this->linear_length; ++i) {
+			Type::Q8.set_float(dst.data(), i, static_cast<float>(src[i]));
+		}
 	} else if (type == Type::F16 && target_type == Type::F8_E2M5) {
 		const auto src = buffer.span<float16_t>();
 		const auto dst = converted.buffer.span<f8e2m5_t>();
 		for (size_t i = 0; i < this->linear_length; ++i) {
 			dst[i] = f8e2m5_t::from(src[i]);
 		}
+	} else if (type == Type::F8_E4M3 && target_type == Type::Q8) {
+		const auto src = buffer.span<f8e4m3_t>();
+		const auto dst = converted.buffer.span<int8_t>();
+		for (size_t i = 0; i < this->linear_length; ++i) {
+			Type::Q8.set_float(dst.data(), i, f8e4m3_t::to_float(src[i]));
+		}
 	} else {
-		std::cerr << "Unsupported dtype conversion." << std::endl;
+		console::print("Unsupported type conversion {} -> {}!\n", type.name(), target_type.name());
 		exit(0);
 	}
 

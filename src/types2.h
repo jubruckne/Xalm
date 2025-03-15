@@ -496,55 +496,68 @@ inline bundle<float16_t> bundle<float16_t>::from_float32(const bundle<float32_t>
     );
     return result;
 }
+*/
 
+struct type {
+	const int id;
+	// constexpr type(const int v) noexcept : id(v) {}
 
-namespace types2 {
-	enum class Type {
-		unknown = 0,
-		f32 = 1,
-		f16 = 2,
-		bf16 = 3,
-		f8_e2m5 = 4,
-		f8_e3m4 = 5,
-		f8_e4m3 = 6,
-		f8_e5m2 = 7,
-		u8 = 8
-	};
-
-	template <Type TYPE>
-	struct TypeDescriptor;
-
-	template <>
-	struct TypeDescriptor<Type::f32> {
-		TypeDescriptor() = delete;
-
-		using scalar_type = float32_t;
-		using native_type = float32_t;
-		using bundle_type = bundle<native_type>;
-
-		constexpr static auto type = Type::f32;
-		constexpr static std::string_view name = "f32";
-		constexpr static size_t bit_size = sizeof(native_type) * 8;
-		constexpr static bool is_floating_point = true;
-		constexpr static bool is_native_type = true;
-
-		static constexpr auto load_bundle = [](const bundle_type::value_type* ptr) {
-			return bundle_type::load(ptr);
-		};
-
-		[[nodiscard]] static scalar_type load_scalar(const void* ptr) noexcept {
-			return *static_cast<const scalar_type*>(ptr);
-		}
-
-		static void store_scalar(void* ptr, const scalar_type value) noexcept {
-			*static_cast<scalar_type*>(ptr) = value;
-		}
-	};
-
-	void test() {
-		using type = TypeDescriptor<Type::f32>;
-		const auto b = type::load_bundle(nullptr);
-		console::print(type::name);
+	template<int type_id>
+	static consteval type make() {
+		return type{type_id};
 	}
 
-}*/
+	constexpr bool operator==(const type& other) const noexcept { return id == other.id; }
+	constexpr bool operator!=(const type& other) const noexcept { return id != other.id; }
+	constexpr operator int() const noexcept { return id; }
+
+	/*	[[nodiscard]] static constexpr type parse(std::string_view str) {
+			for (const auto& t : TypeRegistry) {
+				if (t.name == str) return t;
+			}
+			throw std::invalid_argument("Invalid Type name");
+		}*/
+};
+
+constexpr type F32 = type::make<1>();
+constexpr type F16 = type::make<2>();
+
+template <type T>
+struct traits;
+
+template<> struct traits<F32> {
+	using storage_type = float32_t;
+	using value_type = float32_t;
+	static constexpr uint8_t bit_size = sizeof(value_type);
+	static constexpr std::string_view name = "f32";
+
+	[[nodiscard]] static float32_t get_float(const void* data, const std::size_t offset) {
+		return static_cast<const value_type*>(data)[offset];
+	}
+
+	static void set_float(void* data, const std::size_t offset, const float32_t value) {
+		static_cast<value_type*>(data)[offset] = value;
+	}
+};
+
+template<> struct traits<F16> {
+	using storage_type = float16_t;
+	using value_type = float16_t;
+	static constexpr uint8_t bit_size = sizeof(value_type);
+	static constexpr std::string_view name = "f16";
+
+	[[nodiscard]] static float32_t get_float(const void* data, const std::size_t offset) {
+		return static_cast<const value_type*>(data)[offset];
+	}
+
+	static void set_float(void* data, const std::size_t offset, const float32_t value) {
+		static_cast<value_type*>(data)[offset] = static_cast<value_type>(value);
+	}
+};
+
+template <>
+struct std::hash<type> {
+	size_t operator()(const type& t) const noexcept {
+		return std::hash<int>()(t.id);
+	}
+};
