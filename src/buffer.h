@@ -69,7 +69,7 @@ public:
 
 	explicit buffer(const size_t size) noexcept : _offset(0), _size(size) {
 		if (size > 0) {
-			_data = std::make_shared<std::vector<T, AlignedAllocator<T, Alignment>>>(size);
+			_data = std::make_shared<std::vector<T, AlignedAllocator<T, Alignment>>>(aligned_allocation_size(size));
 		} else {
 			_data = nullptr;
 		}

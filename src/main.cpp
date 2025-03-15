@@ -51,7 +51,7 @@ void run_completion(const std::string& checkpoint_path, const std::string &promp
 	Sampler sampler(model.config);
 	Tokenizer tokenizer(model_data);
 
-	model.token_embedding_table = model.token_embedding_table.convert_to(Type::Q8);
+	//model.token_embedding_table = model.token_embedding_table.convert_to(Type::Q8);
 	//for (int i = 0; i < model.config.n_layers; i++) {
 	//	model.blocks[i].w1 = model.blocks[i].w1.convert_to(Type::Q8);
 	//	model.blocks[i].w2 = model.blocks[i].w2.convert_to(Type::Q8);
@@ -417,7 +417,7 @@ int main(int argc, char *argv[]) {
 	std::string checkpoint_path = ""; // e.g. out/model.bin
 	// Options
 	std::string device = "cpu"; // cpu or cuda
-	std::string mode = "test"; // completion, passkey, or perplexity
+	std::string mode = "completion"; // completion, passkey, or perplexity
 	std::string prompt = "Q: What is the meaning of life? A:"; // prompt string
 	std::string prompt_path; // prompt file path
 	int context = 0;

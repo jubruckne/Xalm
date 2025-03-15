@@ -74,14 +74,27 @@ struct Xalm {
 			stream(std::move(stream)) {}
 	};
 
+	static std::string expand_tilde(const std::string& path) {
+		if (path.empty() || path[0] != '~') {
+			return path;
+		}
+
+		const char* home = std::getenv("HOME");
+		if (!home) {
+			throw std::runtime_error("HOME environment variable not set");
+		}
+
+		return std::format("{}{}\n", home, path.substr(1));
+	}
+
 	[[nodiscard]] static file_info load(const std::string& file_name) {
 		console::print("loading model {}\n", file_name);
 
 		std::map<std::string, tensor_info> tensors;
 		std::string json_string;
 		json metadata;
-		std::ifstream stream(file_name,std::ios::binary);
-		auto file_size = static_cast<std::streamoff>(std::filesystem::file_size(file_name));
+		std::ifstream stream(expand_tilde(file_name),std::ios::binary);
+		auto file_size = static_cast<std::streamoff>(std::filesystem::file_size(expand_tilde(file_name)));
 
 		std::streamoff json_size = 0;
 
@@ -112,8 +125,8 @@ struct Xalm {
 			throw std::invalid_argument("invalid file format!");
 		}
 
-		//std::print("{}\n", json_string);
-		//std::flush(std::cout);
+		// std::print("{}\n", json_string);
+		// std::flush(std::cout);
 
 		for (auto &[key, val]: header.items()) {
 			//std::print("header {}\n", key);
@@ -125,7 +138,7 @@ struct Xalm {
 			auto model_arch = key;
 			// printf("model arch: %s\n", model_arch.c_str());
 
-			if (model_arch == "LlamaForCausalLM") {
+			if (model_arch == "LlamaForCausalLM" || model_arch == "MistralForCausalLM") {
 				metadata = val.at("config");
 				for (auto &[key, val]: val.at("tensors").items()) {
 					auto name = key;
@@ -165,15 +178,17 @@ struct Xalm {
 
 					tensors.emplace(
 						name,
-						tensor_info{name, type,shape,file_name,
+						tensor_info{name, type,shape,expand_tilde(file_name),
 							static_cast<size_t>(offset + data_offset),
 							static_cast<size_t>(size)}
 					);
 				}
+			} else {
+				console::error("unsupported model architecture: {}", model_arch);
 			}
 		}
 
-		return file_info{file_name, metadata, tensors, std::move(stream)};
+		return file_info{expand_tilde(file_name), metadata, tensors, std::move(stream)};
 	}
 };
 

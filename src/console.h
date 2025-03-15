@@ -63,10 +63,19 @@ struct console {
 		return fmt_color(color) + formatted + fmt_color(reset);
 	}
 
-	template <typename FMT, typename... Args> requires std::convertible_to<FMT, std::string_view>
+	template<typename FMT, typename... Args>
+		requires std::convertible_to<FMT, std::string_view>
 	static void print(const color_t color, const FMT& format_str, Args&&... args) {
 		std::cout << format(color, format_str, std::forward<Args>(args)...);
 	}
+
+	template<typename FMT, typename... Args>
+		requires std::convertible_to<FMT, std::string_view>
+	static void error(const FMT& format_str, Args&&... args) {
+		std::cout << format(bright_red, format_str, std::forward<Args>(args)...);
+		exit(1);
+	}
+
 
 private:
 	static std::string fmt_color(const color_t color) {

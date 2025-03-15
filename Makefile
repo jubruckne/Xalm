@@ -11,15 +11,15 @@ VENDOR_DIR := 3rdparty
 ASM_DIR := $(BUILD)/asm
 BIN_DIR := .
 
-CFLAGS := -g -Wall -Wpointer-arith -march=native -O0 -Werror -I$(VENDOR_DIR) -std=c++23
+CFLAGS := -g -Wall -Wpointer-arith -march=native -O3 -Werror -I$(VENDOR_DIR) -std=c++23
 LDFLAGS := -lm
 
 ifeq ($(UNAME), Darwin)	# MAC OS
-    CFLAGS += -mcpu=native -Xpreprocessor -fopenmp -I /opt/homebrew/opt/libomp/include
-    LDFLAGS += -lomp -L /opt/homebrew/opt/libomp/lib
+    CFLAGS += -mcpu=native -Xpreprocessor -fopenmp
+    LDFLAGS += -lomp
 else # LINUX
     LDFLAGS += -fopenmp
-    CFLAGS += -mf16c -mavx2 -mfma -stdlib=libstdc++
+    CFLAGS += -mf16c -mfma -stdlib=libstdc++
 endif
 
 # compile .c, .cpp, .cu files

@@ -1,9 +1,5 @@
 #include "model.h"
-
-#include <assert.h>
 #include <cfloat>
-#include <math.h>
-
 #include "console.h"
 #include "profiler.h"
 #include "types.h"
@@ -581,6 +577,13 @@ void Model::_copy_embedding(const InferenceState &s, const int token) const {
 			const auto *emb = token_embedding_table.get_buffer()->get<f8e4m3_t>();
 			for (int i = 0; i < config.dim; ++i) {
 				s.x()[i] = f8e4m3_t::to_float(emb[token * config.dim + i]);
+			}
+			break;
+		}
+		case Type::F8_E5M2: {
+			const auto *emb = token_embedding_table.get_buffer()->get<f8e5m2_t>();
+			for (int i = 0; i < config.dim; ++i) {
+				s.x()[i] = f8e5m2_t::to_float(emb[token * config.dim + i]);
 			}
 			break;
 		}

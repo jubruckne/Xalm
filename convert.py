@@ -18,7 +18,6 @@ from enum import Enum
 from urllib.parse import urljoin
 
 import xxhash
-from absl.logging import flush
 
 from quants import quantize as gguf_quantize, dequantize as gguf_dequantize, GGMLQuantizationType
 import requests
@@ -1010,8 +1009,8 @@ def download_model(url: str, token: str = None) -> dict:
     if download_file(safetensors_url, safetensors_path, token):
         downloaded_files[safetensors_file] = safetensors_path
         for safetensors_file in ["model-00002-of-00003.safetensors", "model-00003-of-00003.safetensors"]:
-            safetensors_url = urljoin(url + "resolve/main/", safetensors_path)
-            safetensors_path = os.path.join(temp_dir, safetensors_path)
+            safetensors_url = urljoin(url + "resolve/main/", safetensors_file)
+            safetensors_path = os.path.join(temp_dir, safetensors_file)
             if download_file(safetensors_url, safetensors_path, token):
                 downloaded_files[safetensors_file] = safetensors_path
             else:
